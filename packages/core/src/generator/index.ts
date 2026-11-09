@@ -44,6 +44,8 @@ import { resolveGroupListenerEntries, type GroupListenerTargetResolution } from 
 export interface GenerateOptions {
   /** Explicit output format. Defaults to the unchanged Mihomo YAML. */
   target?: "mihomo" | "clash-rs";
+  /** Non-secret stable namespace for clash-rs provider cache isolation. */
+  cacheNamespace?: string;
   nodes: ParsedNode[];
   proxyProviders?: Record<string, unknown>;
   template?: TemplateType;
@@ -595,7 +597,7 @@ export function generateClashConfig(options: GenerateOptions): ClashConfig {
   };
 
   const generated = (config.sharedHealthChecks === true ? shareHealthChecks(clashConfig) : clashConfig) as ClashConfig;
-  return options.target === "clash-rs" ? adaptConfigForNikkiRs(generated) : generated;
+  return options.target === "clash-rs" ? adaptConfigForNikkiRs(generated, { cacheNamespace: options.cacheNamespace }) : generated;
 }
 
 /**

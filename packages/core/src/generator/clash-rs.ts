@@ -56,7 +56,8 @@ function safeExtension(value: unknown, defaultExtension: string): string {
 function rewriteProviders(
   original: unknown,
   baseDirectory: string,
-  isRuleProvider: boolean
+  isRuleProvider: boolean,
+  cacheNamespace?: string
 ): { providers: unknown; renamed: Map<string, string> } {
   if (!isRecord(original)) return { providers: original, renamed: new Map() };
 
@@ -85,9 +86,14 @@ function rewriteProviders(
       ? safeExtension(entry.format, "yaml")
       : "yaml";
     const basename = isRuleProvider ? newName : reserveName(name, usedNames);
+    // An individual subscription must not share cache files with another
+    // subscription that happens to use the same rule/provider name.
+    const scopedBasename = cacheNamespace
+      ? `subboost-${cacheNamespace}-${basename.slice("subboost-".length)}`
+      : basename;
     result[newName] = {
       ...entry,
-      path: `${baseDirectory}/${basename}.${ext}`,
+      path: `${baseDirectory}/${scopedBasename}.${ext}`,
     };
   }
   return { providers: result, renamed: names };
@@ -190,7 +196,18 @@ function setGeoFile(
   if (!validHttpUrl(config[urlField])) config[urlField] = url;
 }
 
-export function adaptConfigForNikkiRs(config: ClashConfig): ClashConfig {
+export interface NikkiRsAdapterOptions {
+  /** Stable, non-secret hex namespace; hash the subscription token server-side. */
+  cacheNamespace?: string;
+}
+
+export function adaptConfigForNikkiRs(
+  config: ClashConfig,
+  options: NikkiRsAdapterOptions = {}
+): ClashConfig {
+  const cacheNamespace = typeof options.cacheNamespace === "string" &&
+    /^[a-f0-9]{12,32}$/.test(options.cacheNamespace)
+    ? options.cacheNamespace : undefined;
   const copy: Mapping = { ...config };
   const geoUrls: Mapping = isRecord(config["geox-url"]) ? config["geox-url"] : {};
   const originalDns = config.dns;
@@ -210,10 +227,10 @@ export function adaptConfigForNikkiRs(config: ClashConfig): ClashConfig {
     "external-ui", "external-ui-url", "ebpf", "tun",
   ]) delete copy[key];
 
-  const ruleProviders = rewriteProviders(config["rule-providers"], RULE_CACHE, true);
+  const ruleProviders = rewriteProviders(config["rule-providers"], RULE_CACHE, true, cacheNamespace);
   copy["rule-providers"] = ruleProviders.providers;
   copy.rules = rewriteRuleSetReferences(rules, ruleProviders.renamed);
-  copy["proxy-providers"] = rewriteProviders(config["proxy-providers"], PROXY_CACHE, false).providers;
+  copy["proxy-providers"] = rewriteProviders(config["proxy-providers"], PROXY_CACHE, false, cacheNamespace).providers;
   copy.dns = fixDnsPolicyReferences(originalDns, ruleProviders.renamed);
   copy.dns2 = fixDns2RuleSetReferences(config.dns2, ruleProviders.renamed);
 

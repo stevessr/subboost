@@ -210,4 +210,44 @@ describe("Nikki RS / clash-rs config compatibility", () => {
     expect(output).not.toHaveProperty("mmdb");
   });
 
+  it("isolates providers of different subscriptions without changing their RULE-SET names", () => {
+    const input = original();
+    const one = adaptConfigForNikkiRs(input, { cacheNamespace: "0123456789abcdef" });
+    const two = adaptConfigForNikkiRs(input, { cacheNamespace: "fedcba9876543210" });
+    expect(one.rules).toEqual(two.rules);
+    expect(one["rule-providers"]?.["subboost-cn"].path)
+      .toBe("/etc/nikki-rs/providers/rule/subboost-0123456789abcdef-cn.mrs");
+    expect(two["rule-providers"]?.["subboost-cn"].path)
+      .toBe("/etc/nikki-rs/providers/rule/subboost-fedcba9876543210-cn.mrs");
+    expect((one["proxy-providers"] as any).airport.path)
+      .toBe("/etc/nikki-rs/providers/proxy/subboost-0123456789abcdef-airport.yaml");
+    expect((two["proxy-providers"] as any).airport.path)
+      .not.toBe((one["proxy-providers"] as any).airport.path);
+    expect(adaptConfigForNikkiRs(input, { cacheNamespace: "0123456789abcdef" })).toEqual(one);
+    expect(input["rule-providers"]?.cn.path).toBe("./ruleset/cn.mrs");
+  });
+
+  it("never interpolates untrusted or token-like cache namespace values into paths", () => {
+    for (const name of ["../other", "ABCD123456789abc", "", "secret", "0123456789abcde/", "a".repeat(70)]) {
+      const config = adaptConfigForNikkiRs(original(), { cacheNamespace: name });
+      expect(config["rule-providers"]?.["subboost-cn"].path)
+        .toBe("/etc/nikki-rs/providers/rule/subboost-cn.mrs");
+    }
+  });
+
+  it("applies scoped cache namespaces via the full generator target", () => {
+    const config = generateClashConfig({
+      target: "clash-rs",
+      cacheNamespace: "1234567890abcdef",
+      nodes: [{
+        name: "Node", type: "ss", server: "example.org", port: 8388,
+        cipher: "aes-128-gcm", password: "secret",
+      }],
+      template: "minimal",
+    });
+    expect(config["rule-providers"]?.["subboost-cn"].path).toBe(
+      "/etc/nikki-rs/providers/rule/subboost-1234567890abcdef-cn.mrs"
+    );
+  });
+
 });
