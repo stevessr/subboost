@@ -39,6 +39,10 @@
 - Deployment docs: [Advanced deployment - compiles from source, slower with higher requirements](https://docs.subboost.org/deploy/advanced)
 - Configuration guide: [Clash configuration simple enough for a paramecium: configure precise routing and chained proxies from the UI in one click](https://ryanvan.com/t/topic/59?u=ryan)
 
+## OpenWrt / LuCI integration
+
+The `luci-app-subboost` package integrates generated subscriptions with Nikki RS through the native LuCI UI, without running a Next.js/PostgreSQL server on the router. GitHub Actions builds OpenWrt 24.10 IPK and 25.12 APK packages. See the [installation and compatibility guide](./docs/openwrt-luci.md).
+
 ## Development Notes
 
 Developers can start a local development environment from source:
