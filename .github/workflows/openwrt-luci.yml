@@ -1,0 +1,94 @@
+name: OpenWrt LuCI packages
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "luci-app-subboost/**"
+      - "docs/openwrt-luci.md"
+      - "tests/test_openwrt_luci.py"
+      - ".github/workflows/openwrt-luci.yml"
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths:
+      - "luci-app-subboost/**"
+      - "docs/openwrt-luci.md"
+      - "tests/test_openwrt_luci.py"
+      - ".github/workflows/openwrt-luci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Validate LuCI package and JavaScript syntax
+        run: |
+          python3 -m unittest discover -s tests -p test_openwrt_luci.py -v
+          node -e "new Function(require('fs').readFileSync('luci-app-subboost/htdocs/luci-static/resources/view/subboost/settings.js', 'utf8'))"
+
+  build:
+    needs: validate
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64-24.10.5
+            family: ipk
+          - arch: aarch64_cortex-a53-24.10.5
+            family: ipk
+          - arch: x86_64-25.12.1
+            family: apk
+          - arch: aarch64_cortex-a53-25.12.1
+            family: apk
+    steps:
+      - uses: actions/checkout@v6
+      - name: Isolate native LuCI feed from Next.js monorepo
+        run: |
+          set -euo pipefail
+          mkdir -p .openwrt-feed
+          cp -a luci-app-subboost .openwrt-feed/
+          test -f .openwrt-feed/luci-app-subboost/Makefile
+      - name: Build using official OpenWrt SDK
+        uses: openwrt/gh-action-sdk@f5813d30eeef3534b58ac7e79c5d8842b6035434
+        env:
+          ARCH: ${{ matrix.arch }}
+          PACKAGES: luci-app-subboost
+          FEEDNAME: subboost
+          FEED_DIR: ${{ github.workspace }}/.openwrt-feed
+      - name: Collect native package
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          find bin/packages -type f -name "luci-app-subboost*.${{ matrix.family }}" -print -exec cp -v {} release/ \;
+          test -n "$(find release -type f -name 'luci-app-subboost*.${{ matrix.family }}' -print -quit)"
+          sha256sum release/* | tee release/SHA256SUMS
+      - uses: actions/upload-artifact@v7
+        with:
+          name: subboost-${{ matrix.arch }}
+          path: release/
+          if-no-files-found: error
+          compression-level: 0
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: subboost-x86_64-*
+          path: artifacts
+      - name: Publish architecture-independent IPK/APK as release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test -n "$(find artifacts -type f \( -name '*.ipk' -o -name '*.apk' \) -print -quit)"
+          find artifacts -type f \( -name '*.ipk' -o -name '*.apk' \) -print0 | xargs -0 -r gh release upload "$GITHUB_REF_NAME" --clobber

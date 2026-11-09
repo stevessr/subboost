@@ -39,6 +39,12 @@
 - 部署文档：[高级部署 - 编译源码构建，速度慢配置要求高](https://docs.subboost.org/deploy/advanced)
 - 配置教程：[草履虫也能学会的 Clash 配置：UI 界面一键配置精确分流、链式代理](https://ryanvan.com/t/topic/59?u=ryan)
 
+## OpenWrt / LuCI 支持
+
+提供轻量级 `luci-app-subboost`，在路由器的 **服务 > SubBoost** 中管理生成的订阅链接，并同步至 Nikki RS。支持通过 GitHub Actions 构建 OpenWrt 24.10 的 IPK 和 25.12 的 APK。SubBoost 转换服务继续运行在在线服务或自建服务器上，路由器无需运行 Next.js / PostgreSQL。
+
+安装及兼容性说明：[OpenWrt/LuCI 使用指南](./docs/openwrt-luci.md)。
+
 ## 开发说明
 
 开发者可以从源码启动本地开发环境：
