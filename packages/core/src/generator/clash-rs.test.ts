@@ -147,4 +147,67 @@ describe("Nikki RS / clash-rs config compatibility", () => {
     expect(generateClashYaml(options)).not.toContain("subboost-cn.mrs");
   });
 
+  it("uses documented GEO download fallback URLs when Mihomo URLs are missing or invalid", () => {
+    const config = adaptConfigForNikkiRs({
+      "geox-url": { mmdb: "file:///private.mmdb", geosite: "javascript:bad", asn: "" },
+      rules: ["GEOIP,JP,DIRECT", "GEOSITE,cn,DIRECT", "IP-ASN,64512,PROXY"],
+      mmdb: "/custom/geo.mmdb",
+      "geosite-download-url": "https://example.org/current.dat",
+    });
+    expect(config.mmdb).toBe("/custom/geo.mmdb");
+    expect(config["mmdb-download-url"]).toContain("DustinWin/ruleset_geodata");
+    expect(config.geosite).toBe("geosite.dat");
+    expect(config["geosite-download-url"]).toBe("https://example.org/current.dat");
+    expect(config["asn-mmdb-download-url"]).toContain("Country-ASN.mmdb");
+  });
+
+  it("keeps local proxy provider paths and leaves unrelated RULE-SET references unchanged", () => {
+    const output = adaptConfigForNikkiRs({
+      "rule-providers": {
+        local: { type: "file", behavior: "domain", path: "./local.yaml" },
+        remote: { type: "http", behavior: "domain", format: "text", url: "https://example.org/remote.txt" },
+      },
+      "proxy-providers": {
+        disk: { type: "file", path: "/etc/nikki-rs/node.yaml" },
+      },
+      rules: ["RULE-SET,remote,DIRECT", "RULE-SET,missing,REJECT", "MATCH,DIRECT", "BAD", 22 as any],
+      dns: { "nameserver-policy": { "geosite:cn": ["223.5.5.5"] } },
+    });
+    expect(output["rule-providers"]?.["subboost-local"].path).toBe("./local.yaml");
+    expect(output["rule-providers"]?.["subboost-remote"].path).toBe(
+      "/etc/nikki-rs/providers/rule/subboost-remote.txt"
+    );
+    expect((output["proxy-providers"] as any).disk.path).toBe("/etc/nikki-rs/node.yaml");
+    expect(output.rules).toContain("RULE-SET,missing,REJECT");
+    expect(output.rules).toContain("BAD");
+    expect(output.rules).toContain(22);
+  });
+
+  it("resolves collisions after safe filename normalization", () => {
+    const output = adaptConfigForNikkiRs({
+      "rule-providers": {
+        "id/path": { type: "http", format: "yaml", url: "https://example.org/a.yaml" },
+        "id.path": { type: "http", format: "yaml", url: "https://example.org/b.yaml" },
+        "!": { type: "http", format: "mrs", url: "https://example.org/c.mrs" },
+      },
+      rules: ["RULE-SET,id/path,DIRECT", "RULE-SET,id.path,PROXY", "RULE-SET,!,REJECT"],
+    });
+    const names = Object.keys(output["rule-providers"]!);
+    expect(new Set(names).size).toBe(3);
+    expect(names).toContain("subboost-id_path");
+    expect(names).toContain("subboost-id_path-2");
+    expect(output.rules).toContain("RULE-SET,subboost-id_path,DIRECT");
+    expect(output.rules).toContain("RULE-SET,subboost-id_path-2,PROXY");
+    expect(names.some((name) => name.startsWith("subboost-unnamed"))).toBe(true);
+  });
+
+  it("handles absent and non-object providers without inventing new downloads", () => {
+    const original = { rules: [], "rule-providers": "unrecognized", "proxy-providers": null };
+    const output = adaptConfigForNikkiRs(original as any);
+    expect(output["rule-providers"]).toBe("unrecognized");
+    expect(output["proxy-providers"]).toBeNull();
+    expect(output).not.toHaveProperty("geosite");
+    expect(output).not.toHaveProperty("mmdb");
+  });
+
 });
