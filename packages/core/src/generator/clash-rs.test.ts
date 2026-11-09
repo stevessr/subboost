@@ -196,8 +196,8 @@ describe("Nikki RS / clash-rs config compatibility", () => {
     expect(new Set(names).size).toBe(3);
     expect(names).toContain("subboost-id_path");
     expect(names).toContain("subboost-id_path-2");
-    expect(output.rules).toContain("RULE-SET,subboost-id_path,DIRECT");
-    expect(output.rules).toContain("RULE-SET,subboost-id_path-2,PROXY");
+    expect(output.rules).toContain("RULE-SET,subboost-id_path-2,DIRECT");
+    expect(output.rules).toContain("RULE-SET,subboost-id_path,PROXY");
     expect(names.some((name) => name.startsWith("subboost-unnamed"))).toBe(true);
   });
 
