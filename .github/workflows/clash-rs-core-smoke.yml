@@ -1,0 +1,42 @@
+name: clash-rs pinned core smoke
+
+on:
+  push:
+    branches: [main, 'feat/**', 'fix/**']
+    paths:
+      - 'packages/core/src/generator/clash-rs*'
+      - 'packages/core/src/generator/index.ts'
+      - '.github/workflows/clash-rs-core-smoke.yml'
+  pull_request:
+    paths:
+      - 'packages/core/src/generator/clash-rs*'
+      - 'packages/core/src/generator/index.ts'
+      - '.github/workflows/clash-rs-core-smoke.yml'
+  workflow_dispatch:
+
+jobs:
+  core-config-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.1'
+          cache: npm
+      - run: npm ci
+      - name: Download Nikki RS pinned clash-rs core
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/clash-rs"
+          curl -fsSL --retry 3 --connect-timeout 15 \
+            'https://github.com/CHKayanami/clash-rs/releases/download/v0.20.23-alpha/clash-rs-minimal-x86_64-unknown-linux-musl.tar.gz' \
+            -o "$RUNNER_TEMP/clash-rs.tar.gz"
+          tar -xzf "$RUNNER_TEMP/clash-rs.tar.gz" -C "$RUNNER_TEMP/clash-rs"
+          binary="$(find "$RUNNER_TEMP/clash-rs" -type f -name clash-rs -print -quit)"
+          test -n "$binary"
+          chmod +x "$binary"
+          echo "CLASH_RS_BINARY=$binary" >> "$GITHUB_ENV"
+      - name: Validate generated config against real clash-rs -t
+        run: npx vitest run packages/core/src/generator/clash-rs-core-smoke.test.ts
