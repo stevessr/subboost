@@ -47,12 +47,19 @@ jobs:
             family: apk
     steps:
       - uses: actions/checkout@v6
+      - name: Isolate native LuCI feed from Next.js monorepo
+        run: |
+          set -euo pipefail
+          mkdir -p .openwrt-feed
+          cp -a luci-app-subboost .openwrt-feed/
+          test -f .openwrt-feed/luci-app-subboost/Makefile
       - name: Build using official OpenWrt SDK
         uses: openwrt/gh-action-sdk@f5813d30eeef3534b58ac7e79c5d8842b6035434
         env:
           ARCH: ${{ matrix.arch }}
           PACKAGES: luci-app-subboost
           FEEDNAME: subboost
+          FEED_DIR: ${{ github.workspace }}/.openwrt-feed
       - name: Collect native package
         run: |
           set -euo pipefail
