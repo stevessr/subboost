@@ -27,6 +27,16 @@ function forNikkiRs(url) {
     return parsed.toString();
 }
 
+function sameNikkiRsSubscription(left, right) {
+    if (!validHttpUrl(left) || !validHttpUrl(right))
+        return false;
+    const first = new URL(forNikkiRs(left));
+    const second = new URL(forNikkiRs(right));
+    first.searchParams.sort();
+    second.searchParams.sort();
+    return first.toString() === second.toString();
+}
+
 function feedback(message, level) {
     ui.addNotification(null, E('p', {}, message), level || 'info');
 }
@@ -43,7 +53,7 @@ function syncSubscription(map, sectionId) {
         return uci.load('nikki-rs').then(function () {
             const managed = uci.sections('nikki-rs', 'subscription').find(function (item) {
                 return item.subboost_source === sectionId ||
-                    (validHttpUrl(item.url) && forNikkiRs(item.url) === forNikkiRs(url));
+                    sameNikkiRsSubscription(item.url, url);
             });
             const target = managed ? managed['.name'] : uci.add('nikki-rs', 'subscription');
 
