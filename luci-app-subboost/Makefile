@@ -7,3 +7,5 @@ LUCI_TITLE:=LuCI integration for SubBoost subscription management
 LUCI_DEPENDS:=+luci-base
 
 include $(TOPDIR)/feeds/luci/luci.mk
+
+# call BuildPackage - OpenWrt buildroot signature
