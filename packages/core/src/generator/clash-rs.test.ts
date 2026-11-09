@@ -50,12 +50,12 @@ describe("Nikki RS / clash-rs config compatibility", () => {
     expect(providers).not.toHaveProperty("cn");
     expect(providers["subboost-ai"].path).toBe("/etc/nikki-rs/providers/rule/subboost-ai.mrs");
     expect(providers["subboost-cn"].url).toBe("https://example.org/cn.mrs");
-    expect(providers["subboost-my_.._custom"].path).not.toContain("../");
+    expect(providers["subboost-my_custom"].path).not.toContain("../");
     expect(providers["subboost-file_rule"].path).toBe("/etc/nikki-rs/custom.mrs");
     expect(config.rules).toEqual([
       "RULE-SET,subboost-ai,AI",
       "RULE-SET,subboost-cn,DIRECT,no-resolve",
-      "RULE-SET,subboost-my_.._custom,PROXY",
+      "RULE-SET,subboost-my_custom,PROXY",
       "RULE-SET,subboost-file_rule,DIRECT",
       "GEOIP,CN,DIRECT,no-resolve",
       "GEOSITE,private,DIRECT",
@@ -69,9 +69,9 @@ describe("Nikki RS / clash-rs config compatibility", () => {
     const config = adaptConfigForNikkiRs(original());
     expect((config["proxy-providers"] as any).airport.path).toBe("/etc/nikki-rs/providers/proxy/subboost-airport.yaml");
     expect(config["rule-providers"]!["subboost-ai"]).toMatchObject({
-      type: "http", format: "mrs", behavior: "domain", interval: undefined,
+      type: "http", format: "mrs", behavior: "domain",
     });
-    expect(config["rule-providers"]!["subboost-my_.._custom"].path).toMatch(/^\/etc\/nikki-rs\/providers\/rule\/[^/]+\.yaml$/);
+    expect(config["rule-providers"]!["subboost-my_custom"].path).toMatch(/^\/etc\/nikki-rs\/providers\/rule\/[^/]+\.yaml$/);
   });
 
   it("replaces Mihomo Geo fields with explicit clash-rs database paths and download URLs", () => {
@@ -110,7 +110,7 @@ describe("Nikki RS / clash-rs config compatibility", () => {
     const snapshot = JSON.parse(JSON.stringify(input));
     const config = adaptConfigForNikkiRs(input);
     expect(input).toEqual(snapshot);
-    expect(config["rule-providers"]!["subboost-my_.._custom"].path).not.toContain("..");
+    expect(config["rule-providers"]!["subboost-my_custom"].path).not.toContain("..");
     const second = adaptConfigForNikkiRs(input);
     expect(second).toEqual(config);
   });

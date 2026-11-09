@@ -161,7 +161,7 @@ function setGeoFile(
 
 export function adaptConfigForNikkiRs(config: ClashConfig): ClashConfig {
   const copy: Mapping = { ...config };
-  const geoUrls = isRecord(config["geox-url"]) ? config["geox-url"] : {};
+  const geoUrls: Mapping = isRecord(config["geox-url"]) ? config["geox-url"] : {};
   const originalDns = config.dns;
   const rules = config.rules;
 

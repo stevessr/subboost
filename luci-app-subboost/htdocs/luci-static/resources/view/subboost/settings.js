@@ -18,7 +18,8 @@ function validHttpUrl(value) {
 
 function forNikkiRs(url) {
     const parsed = new URL(url);
-    if (/^\\/api\\/subscriptions\\/[^/]+\\/config\\.yaml$/.test(parsed.pathname))
+    const parts = parsed.pathname.split('/');
+    if (parts.length === 5 && parts[1] === 'api' && parts[2] === 'subscriptions' && parts[3] && parts[4] === 'config.yaml')
         parsed.searchParams.set('target', 'clash-rs');
     return parsed.toString();
 }
