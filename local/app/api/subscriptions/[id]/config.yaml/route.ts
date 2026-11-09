@@ -14,6 +14,12 @@ type RouteContext = {
 
 export async function GET(request: Request, { params }: RouteContext) {
   const { id: token } = await params;
+  const requestedTarget = new URL(request.url).searchParams.get("target");
+  if (requestedTarget !== null && !["", "mihomo", "clash-rs", "nikki-rs"].includes(requestedTarget)) {
+    return apiError("Unsupported configuration target.", "BAD_REQUEST", 400);
+  }
+  const target = requestedTarget === "clash-rs" || requestedTarget === "nikki-rs"
+    ? "clash-rs" : "mihomo";
   const clientKey = getTrustedClientRateLimitKey(request);
   if (clientKey) {
     const clientLimit = consumeLocalRateLimit("subscription-yaml-client", clientKey, {
@@ -31,7 +37,9 @@ export async function GET(request: Request, { params }: RouteContext) {
   if (!tokenLimit.allowed) {
     return localRateLimitResponse("Too many subscription requests. Try again later.", tokenLimit.retryAfterSeconds);
   }
-  const result = await generateSubscriptionYaml(token);
+  const result = target === "clash-rs"
+    ? await generateSubscriptionYaml(token, "clash-rs")
+    : await generateSubscriptionYaml(token);
   if (!result) return apiError("Subscription YAML not found.", "NOT_FOUND", 404);
   return new Response(result.yaml, {
     headers: buildSubscriptionResponseHeaders(result.name, result.subscriptionInfo, {

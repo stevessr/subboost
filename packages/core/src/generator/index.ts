@@ -3,6 +3,7 @@
  */
 
 import { loadMihomoYaml } from "../config/yaml-schema";
+import { adaptConfigForNikkiRs } from "./clash-rs";
 import {
   buildDefaultBaseConfigPatch,
   buildDefaultUserConfig,
@@ -41,6 +42,8 @@ import { chooseFallbackPolicyTarget, withBuiltinPolicyTargets } from "./policy-t
 import { resolveGroupListenerEntries, type GroupListenerTargetResolution } from "./group-listeners";
 
 export interface GenerateOptions {
+  /** Explicit output format. Defaults to the unchanged Mihomo YAML. */
+  target?: "mihomo" | "clash-rs";
   nodes: ParsedNode[];
   proxyProviders?: Record<string, unknown>;
   template?: TemplateType;
@@ -591,7 +594,8 @@ export function generateClashConfig(options: GenerateOptions): ClashConfig {
     }),
   };
 
-  return (config.sharedHealthChecks === true ? shareHealthChecks(clashConfig) : clashConfig) as unknown as ClashConfig;
+  const generated = (config.sharedHealthChecks === true ? shareHealthChecks(clashConfig) : clashConfig) as ClashConfig;
+  return options.target === "clash-rs" ? adaptConfigForNikkiRs(generated) : generated;
 }
 
 /**
