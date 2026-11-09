@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { adaptConfigForNikkiRs } from "./clash-rs";
+import { generateClashConfig, generateClashYaml } from "./index";
 import type { ClashConfig } from "@subboost/core/types/config";
 
 describe("Nikki RS / clash-rs config compatibility", () => {
@@ -114,4 +115,36 @@ describe("Nikki RS / clash-rs config compatibility", () => {
     const second = adaptConfigForNikkiRs(input);
     expect(second).toEqual(config);
   });
+  it("rewrites all DNS rule-set references without changing direct domains", () => {
+    const source = original();
+    source.dns!["fake-ip-filter"] = ["rule-set:cn", "*.lan"];
+    source.dns2 = { rules: [{ "rule-set": ["cn", "local"], upstream: "direct-dns" }] };
+    const config = adaptConfigForNikkiRs(source);
+    expect(config.dns?.["fake-ip-filter"]).toEqual(["rule-set:subboost-cn", "*.lan"]);
+    expect((config.dns2 as any).rules[0]["rule-set"]).toEqual(["subboost-cn", "local"]);
+  });
+
+  it("generates an end-to-end target profile while retaining default Mihomo behavior", () => {
+    const options = {
+      nodes: [{
+        name: "Node", type: "ss" as const, server: "example.org", port: 8388,
+        cipher: "aes-128-gcm", password: "secret",
+      }],
+      template: "minimal" as const,
+    };
+    const mihomo = generateClashConfig(options);
+    const nikki = generateClashConfig({ ...options, target: "clash-rs" });
+    expect(mihomo["rule-providers"]).toHaveProperty("cn");
+    expect(mihomo["rule-providers"]?.cn.path).toBe("./ruleset/cn.mrs");
+    expect(nikki["rule-providers"]).toHaveProperty("subboost-cn");
+    expect(nikki["rule-providers"]?.["subboost-cn"].path).toBe(
+      "/etc/nikki-rs/providers/rule/subboost-cn.mrs"
+    );
+    expect(nikki.rules?.some((r) => r.includes("RULE-SET,subboost-cn,"))).toBe(true);
+    const yaml = generateClashYaml({ ...options, target: "clash-rs" });
+    expect(yaml).toContain("/etc/nikki-rs/providers/rule/subboost-cn.mrs");
+    expect(yaml).toContain("RULE-SET,subboost-cn,");
+    expect(generateClashYaml(options)).not.toContain("subboost-cn.mrs");
+  });
+
 });

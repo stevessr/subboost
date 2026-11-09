@@ -106,15 +106,45 @@ function rewriteRuleSetReferences(rules: unknown, names: Map<string, string>): u
   });
 }
 
+function rewriteRuleSetLabel(value: string, names: Map<string, string>): string {
+  const match = /^(rule-set:)(.+)$/i.exec(value);
+  const replacement = match && names.get(match[2]);
+  return replacement ? `${match![1]}${replacement}` : value;
+}
+
 function fixDnsPolicyReferences(dns: unknown, names: Map<string, string>): unknown {
-  if (!isRecord(dns) || !isRecord(dns["nameserver-policy"])) return dns;
-  const policy: Mapping = {};
-  for (const [key, value] of Object.entries(dns["nameserver-policy"])) {
-    const match = /^rule-set:(.+)$/i.exec(key);
-    const updatedName = match && names.get(match[1]);
-    policy[updatedName ? `rule-set:${updatedName}` : key] = value;
+  if (!isRecord(dns)) return dns;
+  const next: Mapping = { ...dns };
+  if (isRecord(dns["nameserver-policy"])) {
+    next["nameserver-policy"] = Object.fromEntries(
+      Object.entries(dns["nameserver-policy"]).map(([key, value]) => [
+        rewriteRuleSetLabel(key, names), value,
+      ])
+    );
   }
-  return { ...dns, "nameserver-policy": policy };
+  // Legacy DNS fake-IP filters may name a RULE-SET as a matcher.
+  if (Array.isArray(dns["fake-ip-filter"])) {
+    next["fake-ip-filter"] = dns["fake-ip-filter"].map((matcher) =>
+      typeof matcher === "string" ? rewriteRuleSetLabel(matcher, names) : matcher
+    );
+  }
+  return next;
+}
+
+function fixDns2RuleSetReferences(dns2: unknown, names: Map<string, string>): unknown {
+  if (!isRecord(dns2) || !Array.isArray(dns2.rules)) return dns2;
+  return {
+    ...dns2,
+    rules: dns2.rules.map((rule) => {
+      if (!isRecord(rule) || !Array.isArray(rule["rule-set"])) return rule;
+      return {
+        ...rule,
+        "rule-set": rule["rule-set"].map((name) =>
+          typeof name === "string" ? (names.get(name) ?? name) : name
+        ),
+      };
+    }),
+  };
 }
 
 function hasGeoRule(rules: unknown, ruleType: string): boolean {
@@ -184,6 +214,7 @@ export function adaptConfigForNikkiRs(config: ClashConfig): ClashConfig {
   copy.rules = rewriteRuleSetReferences(rules, ruleProviders.renamed);
   copy["proxy-providers"] = rewriteProviders(config["proxy-providers"], PROXY_CACHE, false).providers;
   copy.dns = fixDnsPolicyReferences(originalDns, ruleProviders.renamed);
+  copy.dns2 = fixDns2RuleSetReferences(config.dns2, ruleProviders.renamed);
 
   // Rule-provider MRS files are preferred. Load large GEO databases only
   // when a legacy GEO rule or a DNS policy actually depends on one.
