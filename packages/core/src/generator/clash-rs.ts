@@ -31,7 +31,8 @@ function isRecord(value: unknown): value is Mapping {
 }
 
 function safeId(id: string): string {
-  return id.replace(/[^a-zA-Z0-9_-]/g, "_").replace(/_+/g, "_").slice(0, 48) || "unnamed";
+  return id.replace(/[^a-zA-Z0-9_-]/g, "_").replace(/_+/g, "_")
+    .replace(/^[_-]+|[_-]+$/g, "").slice(0, 48) || "unnamed";
 }
 
 /** Deterministic, bounded filename: collisions are resolved within each map. */
