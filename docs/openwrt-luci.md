@@ -55,3 +55,30 @@ Remove luci-app-subboost with opkg/apk. There is no running SubBoost daemon
 or added firewall/DNS rule to clean up. Nikki RS subscriptions deliberately
 synced earlier remain in Nikki RS so the router's active proxy profile is not
 silently removed. Remove these entries in Nikki RS if no longer needed.
+
+## Clash-rs / Nikki RS target-aware export
+
+A SubBoost generated subscription normally emits Mihomo YAML. Nikki RS must
+use the explicit target flag (the LuCI integration adds it automatically):
+
+```text
+https://your-subboost.example/api/subscriptions/YOUR_TOKEN/config.yaml?target=clash-rs
+```
+
+`target=nikki-rs` is an alias. Without the query flag (or with
+`target=mihomo`), output remains unchanged.
+
+The clash-rs profile uses namespaced rule providers (`subboost-*`) with
+rewritten `RULE-SET` references to avoid collisions with Nikki RS UCI
+providers. Remote rule caches use
+`/etc/nikki-rs/providers/rule/subboost-*.mrs`; remote proxy provider caches
+use `/etc/nikki-rs/providers/proxy/subboost-*.yaml`. Local file providers
+keep their configured paths. The adapter emits explicit `geosite`, `mmdb`,
+`asn-mmdb` and matching download URLs **when legacy GEO rules or DNS
+settings require those databases**, and removes Mihomo-only `geox-url` and
+geodata-update fields. MRS-only rules do not download full GEO databases.
+
+Nikki RS continues owning interception ports, firewall, TUN/eBPF and its
+own UCI-backed DNS/listener settings. Check clash-rs support for protocols,
+DNS2 and advanced node settings separately; the target adapter does not
+silently convert unsupported protocols to a different protocol.

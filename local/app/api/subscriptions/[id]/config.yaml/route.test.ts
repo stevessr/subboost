@@ -89,4 +89,28 @@ describe("local subscription YAML route", () => {
       { limit: 120, windowMs: 60_000 }
     );
   });
+  it("selects the clash-rs/Nikki RS config only for the explicit target", async () => {
+    const response = await GET(new Request("https://local.test/config.yaml?target=clash-rs"), {
+      params: Promise.resolve({ id: "secret-token" }),
+    });
+    expect(response.status).toBe(200);
+    expect(mocks.generateSubscriptionYaml).toHaveBeenCalledWith("secret-token", "clash-rs");
+  });
+
+  it("accepts nikki-rs as an alias for the clash-rs target", async () => {
+    const response = await GET(new Request("https://local.test/config.yaml?target=nikki-rs"), {
+      params: Promise.resolve({ id: "secret-token" }),
+    });
+    expect(response.status).toBe(200);
+    expect(mocks.generateSubscriptionYaml).toHaveBeenCalledWith("secret-token", "clash-rs");
+  });
+
+  it("rejects unknown targets without accessing subscriptions", async () => {
+    const response = await GET(new Request("https://local.test/config.yaml?target=typo"), {
+      params: Promise.resolve({ id: "secret-token" }),
+    });
+    expect(response.status).toBe(400);
+    expect(mocks.generateSubscriptionYaml).not.toHaveBeenCalled();
+  });
+
 });

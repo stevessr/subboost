@@ -16,6 +16,13 @@ function validHttpUrl(value) {
     }
 }
 
+function forNikkiRs(url) {
+    const parsed = new URL(url);
+    if (/^\\/api\\/subscriptions\\/[^/]+\\/config\\.yaml$/.test(parsed.pathname))
+        parsed.searchParams.set('target', 'clash-rs');
+    return parsed.toString();
+}
+
 function feedback(message, level) {
     ui.addNotification(null, E('p', {}, message), level || 'info');
 }
@@ -36,10 +43,11 @@ function syncSubscription(map, sectionId) {
             const target = managed ? managed['.name'] : uci.add('nikki-rs', 'subscription');
 
             uci.set('nikki-rs', target, 'name', name);
-            uci.set('nikki-rs', target, 'url', url);
+            uci.set('nikki-rs', target, 'url', forNikkiRs(url));
             uci.set('nikki-rs', target, 'user_agent', 'clash-rs');
             uci.set('nikki-rs', target, 'prefer', 'remote');
             uci.set('nikki-rs', target, 'subboost_source', sectionId);
+            uci.set('nikki-rs', target, 'subboost_managed', '1');
             return uci.save().then(function () {
                 return uci.apply();
             }).then(function () {
