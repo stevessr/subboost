@@ -1,0 +1,7 @@
+{
+  "luci-app-subboost": {
+    "description": "Manage SubBoost links and optionally synchronize to Nikki RS",
+    "read": { "uci": ["subboost", "nikki-rs"] },
+    "write": { "uci": ["subboost", "nikki-rs"] }
+  }
+}

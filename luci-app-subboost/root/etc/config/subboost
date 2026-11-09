@@ -1,0 +1,4 @@
+config settings 'main'
+	option base_url 'https://subboost.org'
+
+# Add generated subscriptions through Services > SubBoost.
