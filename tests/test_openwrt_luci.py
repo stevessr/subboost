@@ -30,5 +30,27 @@ class LuCIPackageTests(unittest.TestCase):
         self.assertIn("validHttpUrl", view)
 
 
+    def test_target_url_canonicalization_and_idempotent_sync(self):
+        import shutil
+        import subprocess
+        if not shutil.which("node"):
+            self.skipTest("node unavailable")
+        source = (PACKAGE / "htdocs/luci-static/resources/view/subboost/settings.js").read_text()
+        functions = source[source.index("function validHttpUrl(value)"):source.index("function feedback(message, level)")]
+        script = functions + r"""
+const assert = require('node:assert/strict');
+const url = 'https://test.example/prefix/api/subscriptions/TOKEN/config.yaml';
+assert.equal(forNikkiRs(url), url + '?target=clash-rs');
+assert.equal(forNikkiRs(url + '?target=nikki-rs'), url + '?target=clash-rs');
+assert.equal(forNikkiRs('https://test.example/other.yaml'), 'https://test.example/other.yaml');
+assert(sameNikkiRsSubscription(url + '?q=2&target=nikki-rs',
+  url + '?target=clash-rs&q=2'));
+assert(!sameNikkiRsSubscription(url, url.replace('TOKEN', 'SECOND')));
+assert(!sameNikkiRsSubscription(url, 'ftp://test.example/api/subscriptions/TOKEN/config.yaml'));
+"""
+        result = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

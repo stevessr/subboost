@@ -19,9 +19,22 @@ function validHttpUrl(value) {
 function forNikkiRs(url) {
     const parsed = new URL(url);
     const parts = parsed.pathname.split('/');
-    if (parts.length === 5 && parts[1] === 'api' && parts[2] === 'subscriptions' && parts[3] && parts[4] === 'config.yaml')
+    // Support an application deployed behind a reverse-proxy subpath.
+    const end = parts.length - 1;
+    if (end >= 4 && parts[end] === 'config.yaml' && parts[end - 2] === 'subscriptions' &&
+        parts[end - 3] === 'api' && parts[end - 1])
         parsed.searchParams.set('target', 'clash-rs');
     return parsed.toString();
+}
+
+function sameNikkiRsSubscription(left, right) {
+    if (!validHttpUrl(left) || !validHttpUrl(right))
+        return false;
+    const first = new URL(forNikkiRs(left));
+    const second = new URL(forNikkiRs(right));
+    first.searchParams.sort();
+    second.searchParams.sort();
+    return first.toString() === second.toString();
 }
 
 function feedback(message, level) {
@@ -39,7 +52,8 @@ function syncSubscription(map, sectionId) {
 
         return uci.load('nikki-rs').then(function () {
             const managed = uci.sections('nikki-rs', 'subscription').find(function (item) {
-                return item.subboost_source === sectionId;
+                return item.subboost_source === sectionId ||
+                    sameNikkiRsSubscription(item.url, url);
             });
             const target = managed ? managed['.name'] : uci.add('nikki-rs', 'subscription');
 

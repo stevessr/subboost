@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { generateClashYaml } from "@subboost/core/generator";
 import { buildGenerateOptionsFromConfig, getEffectiveTestOptions } from "@subboost/core/subscription/config-utils";
 import { buildProxyProvidersFromConfig } from "@subboost/core/subscription/proxy-providers";
@@ -459,6 +459,10 @@ export async function generateSubscriptionYaml(
       proxyProviders,
     }),
     target,
+    // Hash rather than expose the bearer token in readable router cache paths.
+    ...(target === "clash-rs"
+      ? { cacheNamespace: createHash("sha256").update(token).digest("hex").slice(0, 16) }
+      : {}),
   });
   await prisma.subscription.update({ where: { id: row.id }, data: { lastAccessedAt: new Date() } });
   return {

@@ -82,3 +82,21 @@ Nikki RS continues owning interception ports, firewall, TUN/eBPF and its
 own UCI-backed DNS/listener settings. Check clash-rs support for protocols,
 DNS2 and advanced node settings separately; the target adapter does not
 silently convert unsupported protocols to a different protocol.
+
+### Isolated provider caches
+
+For exported subscriptions, cache filenames include a stable 16-digit hexadecimal
+prefix derived from SHA-256 of the bearer token. For example,
+`/etc/nikki-rs/providers/rule/subboost-0123456789abcdef-cn.mrs`.
+This prevents two different SubBoost subscriptions with the same provider
+names but different provider URLs from overwriting or reusing each other's
+cached rule/proxy provider files. The raw token is **never** written to provider
+cache paths; the namespace does not alter `RULE-SET` references.
+
+The LuCI synchronizer also recognizes SubBoost API paths deployed below a
+reverse-proxy prefix (for example `/subboost/api/subscriptions/TOKEN/config.yaml`)
+and avoids duplicate imports when old links lack the `target` query.
+
+For load balancing, the clash-rs adapter maps Mihomo's
+`strategy: sticky-sessions` to the clash-rs enum `strategy: sticky-session`;
+the ordinary Mihomo export remains unchanged.
