@@ -154,6 +154,16 @@ function fixDns2RuleSetReferences(dns2: unknown, names: Map<string, string>): un
   };
 }
 
+function adaptLoadBalanceGroups(groups: unknown): unknown {
+  if (!Array.isArray(groups)) return groups;
+  return groups.map((group) => {
+    if (!isRecord(group) || group.type !== "load-balance" ||
+        group.strategy !== "sticky-sessions") return group;
+    // Mihomo's plural spelling differs from the clash-rs serde enum.
+    return { ...group, strategy: "sticky-session" };
+  });
+}
+
 function hasGeoRule(rules: unknown, ruleType: string): boolean {
   return Array.isArray(rules) && rules.some((r) =>
     typeof r === "string" && r.toUpperCase().startsWith(`${ruleType},`)
@@ -229,6 +239,7 @@ export function adaptConfigForNikkiRs(
 
   const ruleProviders = rewriteProviders(config["rule-providers"], RULE_CACHE, true, cacheNamespace);
   copy["rule-providers"] = ruleProviders.providers;
+  copy["proxy-groups"] = adaptLoadBalanceGroups(config["proxy-groups"]);
   copy.rules = rewriteRuleSetReferences(rules, ruleProviders.renamed);
   copy["proxy-providers"] = rewriteProviders(config["proxy-providers"], PROXY_CACHE, false, cacheNamespace).providers;
   copy.dns = fixDnsPolicyReferences(originalDns, ruleProviders.renamed);

@@ -250,4 +250,20 @@ describe("Nikki RS / clash-rs config compatibility", () => {
     );
   });
 
+  it("uses clash-rs sticky-session strategy spelling without mutating Mihomo groups", () => {
+    const source: ClashConfig = {
+      "proxy-groups": [
+        { name: "sticky", type: "load-balance", strategy: "sticky-sessions", proxies: ["DIRECT"] },
+        { name: "round", type: "load-balance", strategy: "round-robin", proxies: ["DIRECT"] },
+        { name: "selector", type: "select", proxies: ["DIRECT"] },
+      ],
+    };
+    const output = adaptConfigForNikkiRs(source);
+    expect(output["proxy-groups"]?.[0].strategy).toBe("sticky-session");
+    expect(output["proxy-groups"]?.[1].strategy).toBe("round-robin");
+    expect(output["proxy-groups"]?.[2].type).toBe("select");
+    expect(source["proxy-groups"]?.[0].strategy).toBe("sticky-sessions");
+    expect(adaptConfigForNikkiRs({})["proxy-groups"]).toBeUndefined();
+  });
+
 });

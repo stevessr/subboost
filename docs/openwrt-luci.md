@@ -96,3 +96,7 @@ cache paths; the namespace does not alter `RULE-SET` references.
 The LuCI synchronizer also recognizes SubBoost API paths deployed below a
 reverse-proxy prefix (for example `/subboost/api/subscriptions/TOKEN/config.yaml`)
 and avoids duplicate imports when old links lack the `target` query.
+
+For load balancing, the clash-rs adapter maps Mihomo's
+`strategy: sticky-sessions` to the clash-rs enum `strategy: sticky-session`;
+the ordinary Mihomo export remains unchanged.
