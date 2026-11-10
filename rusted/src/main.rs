@@ -4,6 +4,7 @@ mod store;
 mod templates;
 mod schedule;
 mod protocols;
+mod filter;
 mod web;
 
 use std::{env, net::SocketAddr, path::PathBuf, sync::{Arc, Mutex}};

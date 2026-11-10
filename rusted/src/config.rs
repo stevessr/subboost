@@ -180,6 +180,10 @@ fn adapt_clash_rs(config: &mut Mapping, token: &str) {
 }
 
 pub fn generate(subscription: &Subscription, target: &str) -> Result<String, String> {
+    generate_filtered(subscription,target,&crate::filter::NodeNameFilter::default())
+}
+pub fn generate_filtered(subscription: &Subscription, target: &str,
+    name_filter:&crate::filter::NodeNameFilter) -> Result<String,String> {
     if !matches!(target,"mihomo"|"clash-rs"|"nikki-rs") {
         return Err("Unsupported target (mihomo or clash-rs)".into());
     }
@@ -197,6 +201,7 @@ pub fn generate(subscription: &Subscription, target: &str) -> Result<String, Str
         proxies.extend(cached);
     }
     let proxies = crate::parser::validate_nodes(proxies)?;
+    let proxies = crate::filter::apply(proxies,name_filter)?;
     if proxies.is_empty() { return Err("No proxy nodes: import/refresh a subscription first".into()); }
     let names: Vec<Value> = proxies.iter().filter_map(|p| p["name"].as_str().map(key)).collect();
     set(&mut manual,"proxies",Value::Sequence(proxies));
