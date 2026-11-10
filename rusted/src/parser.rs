@@ -370,10 +370,11 @@ fn parse_vless(raw: &str) -> Result<Value, String> {
             proxy["client-fingerprint"]=serde_json::json!("chrome");
         }
         let public_key=pbk.filter(|s|!s.is_empty()).ok_or("Reality public key required")?;
-        proxy["reality-opts"]=serde_json::json!({
-            "public-key":public_key,
-            "short-id":query_param(&url,"sid").unwrap_or_default()
-        });
+        let mut reality=serde_json::json!({"public-key":public_key});
+        if let Some(id)=query_param(&url,"sid").filter(|s|!s.is_empty()) {
+            reality["short-id"]=serde_json::json!(id);
+        }
+        proxy["reality-opts"]=reality;
     }
     node(proxy)
 }
@@ -472,7 +473,8 @@ fn parse_vmess_config(settings: &serde_json::Value) -> Result<Value, String> {
         },
         "grpc" => {
             let service = json_string(settings, "serviceName").filter(|s| !s.is_empty())
-                .unwrap_or(path);
+                .or_else(||json_string(settings, "path").filter(|s|!s.is_empty()))
+                .unwrap_or("");
             let mut opts = serde_json::json!({"grpc-service-name":service});
             if let Some(mode) = json_string(settings, "mode").filter(|s| !s.is_empty()) {
                 opts["_grpcType"] = serde_json::json!(mode);
