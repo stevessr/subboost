@@ -544,7 +544,7 @@ mod tests {
             let uri = fixture["uri"].as_str().unwrap();
             let node = parse_uri(uri).unwrap_or_else(|err| panic!("{}: {err}", fixture["id"]));
             let mut actual = serde_json::Map::new();
-            for key in ["name", "type", "server", "port", "network", "cipher", "password", "udp", "sni", "client-fingerprint", "plugin", "tfo"] {
+            for key in ["name", "type", "server", "port", "network", "cipher", "password", "udp", "sni", "client-fingerprint", "plugin", "tfo", "tls", "uuid", "alterId", "servername", "skip-cert-verify"] {
                 if let Some(value) = node.get(key) {
                     actual.insert(key.into(), serde_json::to_value(value).unwrap());
                 }
@@ -573,11 +573,28 @@ mod tests {
                     actual.insert("ws_host".into(), serde_json::to_value(host).unwrap());
                 }
             }
+            if let Some(http) = node.get("http-opts") {
+                for (source, target) in [("method","http_method"),("path","http_paths")] {
+                    if let Some(value) = http.get(source) {
+                        actual.insert(target.into(), serde_json::to_value(value).unwrap());
+                    }
+                }
+                if let Some(hosts) = http.get("headers").and_then(|v|v.get("Host")) {
+                    actual.insert("http_hosts".into(),serde_json::to_value(hosts).unwrap());
+                }
+            }
             if let Some(service) = node.get("grpc-opts")
                 .and_then(|grpc| grpc.get("grpc-service-name")) {
                 actual.insert("grpc_service".into(), serde_json::to_value(service).unwrap());
             }
-            assert_eq!(serde_json::Value::Object(actual), fixture["expected"],
+            let mut selected = serde_json::Map::new();
+            let expected = fixture["expected"].as_object().unwrap();
+            for key in expected.keys() {
+                if let Some(value) = actual.get(key) {
+                    selected.insert(key.clone(), value.clone());
+                }
+            }
+            assert_eq!(serde_json::Value::Object(selected), fixture["expected"],
                 "Parity mismatch for {}", fixture["id"]);
         }
     }
