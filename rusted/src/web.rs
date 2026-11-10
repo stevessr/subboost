@@ -409,6 +409,24 @@ async fn templates_create(AppState(state): AppState<State>,headers: HeaderMap,
     let db=lock(&state)?;
     Ok(Json(sql(templates::create(&db,input))?))
 }
+async fn templates_export(AppState(state): AppState<State>,headers:HeaderMap,
+    Path(id):Path<String>) -> ApiResult<templates::PortableTemplate> {
+    authorized(&state,&headers)?;
+    let db=lock(&state)?;
+    let template=sql(templates::get(&db,&id))?
+        .ok_or_else(||error(StatusCode::NOT_FOUND,"Template not found"))?;
+    Ok(Json(templates::PortableTemplate::from_template(&template)))
+}
+
+async fn templates_import(AppState(state): AppState<State>,headers:HeaderMap,
+    Json(payload):Json<templates::PortableTemplate>) -> ApiResult<templates::Template> {
+    authorized(&state,&headers)?;
+    let input=payload.into_input().map_err(bad)?;
+    validate_template(&input)?;
+    let db=lock(&state)?;
+    Ok(Json(sql(templates::create(&db,input))?))
+}
+
 async fn templates_update(AppState(state): AppState<State>,headers: HeaderMap,
     Path(id):Path<String>,Json(input):Json<templates::TemplateInput>)
     -> ApiResult<templates::Template> {
@@ -549,6 +567,8 @@ pub fn router(state: State) -> Router {
         .route("/api/subscriptions/{id}/modules",
             get(profile_modules_get).put(profile_modules_set))
         .route("/api/templates",get(templates_list).post(templates_create))
+        .route("/api/templates/import",axum::routing::post(templates_import))
+        .route("/api/templates/{id}/export",get(templates_export))
         .route("/api/templates/{id}",get(templates_get).put(templates_update)
             .delete(templates_delete))
         .route("/api/subscriptions",get(list).post(create))
@@ -579,6 +599,53 @@ mod tests {
         for ip in ["1.1.1.1","8.8.8.8","2606:4700:4700::1111"] {
             assert!(public_ip(ip.parse().unwrap()),"{ip}");
         }
+    }
+    #[tokio::test]
+    async fn portable_template_export_and_import_require_admin() {
+        let db=store::open(std::path::Path::new(":memory:")).unwrap();
+        let template=templates::create(&db,templates::TemplateInput {
+            name:"Portable".into(),description:"Test".into(),
+            manual_yaml:"dns:\n  enable: true".into(),
+            rules_text:"MATCH,DIRECT".into(),
+        }).unwrap();
+        let state=State {
+            db:std::sync::Arc::new(std::sync::Mutex::new(db)),
+            admin_token:std::sync::Arc::new("x".repeat(43)),
+            client:reqwest::Client::new(),
+        };
+        let app=router(state);
+        let uri=format!("/api/templates/{}/export",template.id);
+        let denied=app.clone().oneshot(Request::builder().uri(&uri)
+            .body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(denied.status(),StatusCode::UNAUTHORIZED);
+        let exported=app.clone().oneshot(Request::builder().uri(&uri)
+            .header("Authorization",format!("Bearer {}","x".repeat(43)))
+            .body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(exported.status(),StatusCode::OK);
+        let bytes=axum::body::to_bytes(exported.into_body(),1024*1024).await.unwrap();
+        let portable:serde_json::Value=serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(portable["version"],1);
+        assert_eq!(portable["format"],"subboost-rs-template");
+        assert!(portable.get("id").is_none());
+        let imported=app.clone().oneshot(Request::builder().uri("/api/templates/import")
+            .method("POST")
+            .header("Authorization",format!("Bearer {}","x".repeat(43)))
+            .header("Content-Type","application/json")
+            .body(Body::from(bytes.clone())).unwrap()).await.unwrap();
+        assert_eq!(imported.status(),StatusCode::OK);
+        let bytes=axum::body::to_bytes(imported.into_body(),1024*1024).await.unwrap();
+        let imported:serde_json::Value=serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(imported["name"],"Portable");
+        assert_ne!(imported["id"],template.id);
+
+        let mut invalid=portable.clone();
+        invalid["version"]=json!(2);
+        let rejected=app.oneshot(Request::builder().uri("/api/templates/import")
+            .method("POST")
+            .header("Authorization",format!("Bearer {}","x".repeat(43)))
+            .header("Content-Type","application/json")
+            .body(Body::from(invalid.to_string())).unwrap()).await.unwrap();
+        assert_eq!(rejected.status(),StatusCode::BAD_REQUEST);
     }
     #[tokio::test]
     async fn rule_catalog_search_is_authenticated_and_bounded() {
