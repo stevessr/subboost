@@ -54,6 +54,7 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     let db = Connection::open(path)?;
     db.pragma_update(None, "journal_mode", "WAL")?;
     db.pragma_update(None, "busy_timeout", 5000)?;
+    db.pragma_update(None, "foreign_keys", "ON")?;
     db.execute_batch(
         "CREATE TABLE IF NOT EXISTS subscriptions (
             id TEXT PRIMARY KEY,
@@ -81,6 +82,7 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     crate::schedule::initialize(&db)?;
     crate::filter::initialize(&db)?;
     crate::modules::initialize(&db)?;
+    crate::identity::initialize(&db)?;
     db.execute_batch("CREATE TABLE IF NOT EXISTS subscription_source_cache(
         subscription_id TEXT NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
         source_hash TEXT NOT NULL,
