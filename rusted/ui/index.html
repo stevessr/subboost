@@ -57,6 +57,12 @@
 <textarea id="node-filter-excludes" rows="2" placeholder="expired|过期"></textarea>
 <button id="save-node-filter" class="secondary small" type="button" disabled>保存筛选条件</button>
 </div>
+<div class="template-tools">
+<label>节点智能重命名（按稳定身份持久化）</label>
+<p class="muted smallprint">重命名会保留原始订阅内容，不受节点显示名称和内部元数据变化影响。</p>
+<div id="node-alias-list" class="rule-results" aria-live="polite"></div>
+<button id="reload-node-aliases" type="button" class="secondary small" disabled>刷新节点列表</button>
+</div>
 <label for="manual">节点 / 自定义 Clash YAML</label><textarea id="manual" rows="9" spellcheck="false" placeholder="proxies:&#10;  - name: Node&#10;    type: ss&#10;    server: example.com&#10;    port: 8388&#10;    cipher: aes-128-gcm&#10;    password: secret"></textarea>
 <label for="rules">自定义规则（每行一条，可留空）</label><textarea id="rules" rows="4" spellcheck="false" placeholder="DOMAIN-SUFFIX,example.com,DIRECT&#10;MATCH,Proxy"></textarea>
 <div class="actions"><button type="submit" class="primary">保存配置</button><button type="button" id="refresh" class="secondary" disabled>刷新节点</button><button type="button" id="delete" class="danger" disabled>删除</button></div></form>
