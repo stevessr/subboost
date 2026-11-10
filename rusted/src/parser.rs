@@ -213,6 +213,14 @@ fn transport_options(url: &Url, proxy: &mut serde_json::Value, network: &str) ->
                     .trim_start_matches('/').to_owned());
             proxy["grpc-opts"] = serde_json::json!({"grpc-service-name": service});
         },
+        "h2" => {
+            let path=query_param(url,"path").unwrap_or_else(||"/".into());
+            let mut opts=serde_json::json!({"path":path});
+            if let Some(host)=query_param(url,"host").filter(|s|!s.is_empty()) {
+                opts["host"]=serde_json::json!(csv_list(&host));
+            }
+            proxy["h2-opts"]=opts;
+        },
         "http" => {
             let path = query_param(url, "path").unwrap_or_else(|| "/".into());
             let mut opts = serde_json::json!({"path": [path]});
@@ -264,35 +272,87 @@ fn parse_trojan(raw: &str) -> Result<Value, String> {
     transport_options(&url, &mut proxy, &network)?;
     node(proxy)
 }
+fn vless_uri(raw: &str) -> Result<(Url,bool),String> {
+    let tail=raw.strip_prefix("vless://").ok_or("Invalid VLESS scheme")?;
+    let authority=tail.split(['?','#']).next().unwrap_or("");
+    if authority.contains('@') {
+        return Url::parse(raw).map(|url|(url,false)).map_err(|e|e.to_string());
+    }
+    // Shadowrocket exports vless://BASE64(cipher:uuid@server:port)?params#name.
+    let (encoded, suffix)=tail.split_once('?').ok_or("VLESS encoded authority missing query")?;
+    let encoded=percent_encoding::percent_decode_str(encoded)
+        .decode_utf8().map_err(|_|"Invalid encoded VLESS authority")?;
+    let decoded=decode_base64(&encoded).ok_or("Invalid Shadowrocket VLESS base64")?;
+    let decoded=String::from_utf8(decoded).map_err(|_|"Invalid Shadowrocket VLESS UTF-8")?;
+    let url=Url::parse(&format!("vless://{decoded}{suffix}"))
+        .map_err(|e|e.to_string())?;
+    Ok((url,true))
+}
+
 fn parse_vless(raw: &str) -> Result<Value, String> {
-    let url = Url::parse(raw).map_err(|e| e.to_string())?;
+    let (url,shadowrocket)=vless_uri(raw)?;
     let (server, port) = endpoint_with_default(&url, 443)?;
-    if url.username().is_empty() { return Err("Missing VLESS UUID".into()); }
-    let security = query_param(&url, "security").unwrap_or_else(|| "none".into());
+    let mut uuid = percent_encoding::percent_decode_str(url.username())
+        .decode_utf8_lossy().to_string();
+    if shadowrocket {
+        if let Some(password)=url.password(){
+            uuid=format!("{}:{}",uuid,percent_encoding::percent_decode_str(password).decode_utf8_lossy());
+        }
+        uuid=uuid.rsplit(':').next().unwrap_or("").to_owned();
+    }
+    if uuid.is_empty() { return Err("Missing VLESS UUID".into()); }
+    let pbk=query_param(&url,"pbk")
+        .or_else(||query_param(&url,"public-key"))
+        .or_else(||query_param(&url,"public_key"));
+    let security=query_param(&url,"security").filter(|s|!s.is_empty())
+        .unwrap_or_else(||{
+            if pbk.is_some() { "reality".into() }
+            else if shadowrocket && query_bool(&url,"tls") { "tls".into() }
+            else { "none".into() }
+        });
     if !matches!(security.as_str(), "none" | "tls" | "reality") {
         return Err(format!("Unsupported VLESS security: {security}"));
     }
-    let network = query_param(&url, "type").unwrap_or_else(|| "tcp".into());
-    let mut proxy = serde_json::json!({
-        "name": fragment_name(&url, &server), "type": "vless",
-        "server": server, "port": port, "uuid": url.username(), "udp": true,
+    let input_network=query_param(&url,"type")
+        .or_else(||(shadowrocket).then(||query_param(&url,"obfs")).flatten())
+        .unwrap_or_else(||"tcp".into()).to_ascii_lowercase();
+    let http_upgrade=input_network=="httpupgrade";
+    let network=match input_network.as_str() {
+        "none" | "tcp" => if query_param(&url,"headerType").as_deref()==Some("http") {"http"}else{"tcp"},
+        "websocket" | "httpupgrade" | "ws" => "ws",
+        "grpc" => "grpc", "http" => "http", "h2" => "h2",
+        other => return Err(format!("Unsupported VLESS transport: {other}")),
+    };
+    let name=fragment_name(&url,"VLESS 节点");
+    let mut proxy=serde_json::json!({
+        "name": name, "type": "vless", "server": server, "port": port,
+        "uuid": uuid, "udp": true,
         "tls": matches!(security.as_str(), "tls" | "reality"),
-        "network": network,
+        "network":network,
     });
     tls_options(&url, &mut proxy);
-    if let Some(flow) = query_param(&url, "flow").filter(|s| !s.is_empty()) {
-        proxy["flow"] = serde_json::json!(flow);
+    if let Some(flow)=query_param(&url,"flow").filter(|s|!s.is_empty()) {
+        proxy["flow"]=serde_json::json!(flow);
     }
-    transport_options(&url, &mut proxy, &network)?;
-    if security == "reality" {
+    if let Some(encoding)=query_param(&url,"encryption").filter(|s|!s.is_empty()) {
+        proxy["encryption"]=serde_json::json!(encoding);
+    }
+    if shadowrocket && security=="tls" && proxy.get("client-fingerprint").is_none() {
+        proxy["client-fingerprint"]=serde_json::json!("chrome");
+    }
+    transport_options(&url,&mut proxy,network)?;
+    if http_upgrade {
+        proxy["ws-opts"]["v2ray-http-upgrade"]=serde_json::json!(true);
+        proxy["ws-opts"]["v2ray-http-upgrade-fast-open"]=serde_json::json!(true);
+    }
+    if security=="reality" {
         if proxy.get("client-fingerprint").is_none() {
-            proxy["client-fingerprint"] = serde_json::json!("chrome");
+            proxy["client-fingerprint"]=serde_json::json!("chrome");
         }
-        let public_key = query_param(&url, "pbk").filter(|s| !s.is_empty())
-            .ok_or("Reality public key required")?;
-        proxy["reality-opts"] = serde_json::json!({
-            "public-key": public_key,
-            "short-id": query_param(&url, "sid").unwrap_or_default()
+        let public_key=pbk.filter(|s|!s.is_empty()).ok_or("Reality public key required")?;
+        proxy["reality-opts"]=serde_json::json!({
+            "public-key":public_key,
+            "short-id":query_param(&url,"sid").unwrap_or_default()
         });
     }
     node(proxy)
