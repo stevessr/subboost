@@ -201,5 +201,24 @@
       "grpc_service": "uri-svc",
       "client-fingerprint": "chrome"
     }
+  },
+  {
+    "id": "vless-shadowrocket-base64-implicit-tls",
+    "uri": "vless://YXV0bzoxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTFAc2hhZG93LmV4YW1wbGUub3JnOjQ0Mw?tls=1&obfs=websocket&host=cdn.example.org&path=%2Fws%3Fed%3D64#Shadowrocket",
+    "expected": {
+      "name": "Shadowrocket",
+      "type": "vless",
+      "server": "shadow.example.org",
+      "port": 443,
+      "network": "ws",
+      "uuid": "11111111-1111-4111-8111-111111111111",
+      "udp": true,
+      "tls": true,
+      "client-fingerprint": "chrome",
+      "ws_path": "/ws",
+      "ws_early_data": 64,
+      "ws_header": "Sec-WebSocket-Protocol",
+      "ws_host": "cdn.example.org"
+    }
   }
 ]
