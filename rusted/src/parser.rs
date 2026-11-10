@@ -72,7 +72,7 @@ fn ss_plugin_opts(url: &Url, proxy: &mut serde_json::Value) {
         let segment = segment.trim();
         if segment.is_empty() { continue; }
         let (key, value) = match segment.split_once('=') {
-            Some((key, value)) => (key.trim(), serde_json::json!(if value.trim().is_empty() { "true" } else { value.trim() })),
+            Some((key, value)) => (key.trim(), if value.trim().is_empty() { serde_json::json!(true) } else { serde_json::json!(value.trim()) }),
             None => (segment, serde_json::json!(true)),
         };
         if !key.is_empty() { opts.insert(key.to_owned(), value); }
@@ -138,8 +138,11 @@ fn parse_ss(raw: &str) -> Result<Value, String> {
     if let Ok(url) = Url::parse(raw) {
         ss_plugin_opts(&url, &mut proxy);
         for (query, field) in [("uot", "udp-over-tcp"), ("tfo", "tfo")] {
-            if query_bool(&url, query) {
-                proxy[field] = serde_json::json!(true);
+            if let Some(value) = query_param(&url, query) {
+                let value = value.trim().to_ascii_lowercase();
+                if value.is_empty() || matches!(value.as_str(), "1" | "true" | "yes" | "on") {
+                    proxy[field] = serde_json::json!(true);
+                }
             }
         }
     }
