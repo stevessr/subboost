@@ -1,4 +1,4 @@
-use crate::{config, filter, metadata, parser, schedule, store, templates, State};
+use crate::{config, filter, metadata, modules, parser, schedule, store, templates, State};
 use axum::{
     body::Body,
     extract::{Path, Query, State as AppState},
@@ -324,7 +324,7 @@ async fn export(AppState(state): AppState<State>,
     if !matches!(target,"mihomo"|"clash-rs"|"nikki-rs") {
         return error(StatusCode::BAD_REQUEST,"Unsupported target").into_response();
     }
-    let (sub,options,subscription_info,refresh_interval)={
+    let (sub,options,subscription_info,refresh_interval,enabled_modules)={
         let db=match lock(&state) {Ok(v)=>v,Err(e)=>return e.into_response()};
         let sub=match sql(store::by_token(&db,&token)) {
             Ok(Some(s))=>s,
@@ -343,9 +343,13 @@ async fn export(AppState(state): AppState<State>,
             Ok(v)=>v.map(|s|s.interval_seconds),
             Err(e)=>return e.into_response(),
         };
-        (sub,options,info,interval)
+        let enabled=match sql(modules::get(&db,&sub.id)){
+            Ok(v)=>v,
+            Err(e)=>return e.into_response(),
+        };
+        (sub,options,info,interval,enabled)
     };
-    match config::generate_filtered(&sub,target,&options) {
+    match config::generate_with_modules(&sub,target,&options,&enabled_modules) {
         Ok(yaml)=>{
             // Only use percent-encoded RFC 5987 filenames to avoid header
             // injection from user-supplied configuration names.
@@ -424,6 +428,36 @@ async fn templates_delete(AppState(state): AppState<State>,headers: HeaderMap,
     Ok(Json(json!({"deleted":true})))
 }
 
+async fn modules_catalog(AppState(state):AppState<State>,headers:HeaderMap)
+    -> ApiResult<Vec<modules::Module>>{
+    authorized(&state,&headers)?;
+    Ok(Json(modules::all().to_vec()))
+}
+
+async fn profile_modules_get(AppState(state):AppState<State>,headers:HeaderMap,
+    Path(id):Path<String>) -> ApiResult<Vec<String>>{
+    authorized(&state,&headers)?;
+    let db=lock(&state)?;
+    if sql(store::by_id(&db,&id))?.is_none(){
+        return Err(error(StatusCode::NOT_FOUND,"Subscription not found"));
+    }
+    Ok(Json(sql(modules::get(&db,&id))?))
+}
+
+#[derive(Deserialize)]
+struct ModuleSelection { enabled:Vec<String> }
+
+async fn profile_modules_set(AppState(state):AppState<State>,headers:HeaderMap,
+    Path(id):Path<String>,Json(input):Json<ModuleSelection>) -> ApiResult<Vec<String>>{
+    authorized(&state,&headers)?;
+    modules::validate(&input.enabled).map_err(bad)?;
+    let db=lock(&state)?;
+    if !sql(modules::put(&db,&id,&input.enabled))?{
+        return Err(error(StatusCode::NOT_FOUND,"Subscription not found"));
+    }
+    Ok(Json(input.enabled))
+}
+
 async fn subscription_info(AppState(state):AppState<State>, headers:HeaderMap,
     Path(id):Path<String>) -> ApiResult<metadata::SubscriptionInfo> {
     authorized(&state,&headers)?;
@@ -469,6 +503,9 @@ pub fn router(state: State) -> Router {
         .route("/app.js",get(js))
         .route("/style.css",get(css))
         .route("/api/health/live",get(health))
+        .route("/api/modules",get(modules_catalog))
+        .route("/api/subscriptions/{id}/modules",
+            get(profile_modules_get).put(profile_modules_set))
         .route("/api/templates",get(templates_list).post(templates_create))
         .route("/api/templates/{id}",get(templates_get).put(templates_update)
             .delete(templates_delete))
