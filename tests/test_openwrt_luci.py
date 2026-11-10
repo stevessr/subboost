@@ -35,6 +35,8 @@ class LuCIPackageTests(unittest.TestCase):
         self.assertIn("ui.menu.flushCache()", view)
         self.assertIn("localWebUrl()", view)
         self.assertIn("Refresh LuCI services menu", view)
+        self.assertIn("Open local SubBoost RS", view)
+        self.assertIn("window.open(localWebUrl(), '_blank', 'noopener,noreferrer')", view)
 
 
     def test_target_url_canonicalization_and_idempotent_sync(self):

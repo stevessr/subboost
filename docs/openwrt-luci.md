@@ -146,3 +146,5 @@ does not show it, click **Refresh LuCI services menu** within the
 SubBoost page. This explicitly invalidates the browser's cached LuCI
 menu and reloads it. Server-side rpcd and index cache cleanup alone
 cannot clear that browser session cache.
+
+When upgrading from the hosted-only LuCI package, an existing `base_url` may still point to the former remote editor. Use the dedicated **Open local SubBoost RS** action to reach the router service directly without modifying the retained remote URL.
