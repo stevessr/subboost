@@ -699,7 +699,7 @@ mod tests {
         let token=format!("Bearer {}","x".repeat(43));
         let uri=format!("/api/subscriptions/{}/nodes",sub.id);
         let response=app.clone().oneshot(Request::builder().uri(&uri)
-            .header("Authorization",&token).body(Body::empty()).unwrap())
+            .header("Authorization",token.as_str()).body(Body::empty()).unwrap())
             .await.unwrap();
         assert_eq!(response.status(),StatusCode::OK);
         let bytes=axum::body::to_bytes(response.into_body(),1024*1024).await.unwrap();
@@ -709,7 +709,7 @@ mod tests {
         assert!(nodes[0].get("password").is_none());
         let uri=format!("/api/subscriptions/{}/node-aliases/{}",sub.id,hash);
         let result=app.clone().oneshot(Request::builder().uri(&uri).method("PUT")
-            .header("Authorization",&token).header("Content-Type","application/json")
+            .header("Authorization",token.as_str()).header("Content-Type","application/json")
             .body(Body::from(r#"{"name":"Renamed"}"#)).unwrap())
             .await.unwrap();
         assert_eq!(result.status(),StatusCode::OK);
@@ -722,7 +722,7 @@ mod tests {
         assert_eq!(config["proxies"][0]["name"].as_str(),Some("Renamed"));
         assert_eq!(config["proxy-groups"][0]["proxies"][1].as_str(),Some("Renamed"));
         let result=app.clone().oneshot(Request::builder().uri(&uri).method("DELETE")
-            .header("Authorization",&token).body(Body::empty()).unwrap()).await.unwrap();
+            .header("Authorization",token.as_str()).body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(result.status(),StatusCode::OK);
         let output=app.oneshot(Request::builder()
             .uri(format!("/api/subscriptions/{}/config.yaml?target=mihomo",sub.token))
