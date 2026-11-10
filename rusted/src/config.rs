@@ -289,6 +289,13 @@ pub fn generate_filtered(subscription: &Subscription, target: &str,
 pub fn generate_with_modules(subscription: &Subscription, target: &str,
     name_filter:&crate::filter::NodeNameFilter, enabled_modules:&[String]
 ) -> Result<String,String> {
+    generate_with_aliases(subscription,target,name_filter,enabled_modules,
+        &HashMap::new())
+}
+pub fn generate_with_aliases(subscription: &Subscription, target: &str,
+    name_filter:&crate::filter::NodeNameFilter, enabled_modules:&[String],
+    aliases:&HashMap<String,String>
+) -> Result<String,String> {
     if !matches!(target,"mihomo"|"clash-rs"|"nikki-rs") {
         return Err("Unsupported target (mihomo or clash-rs)".into());
     }
@@ -305,6 +312,9 @@ pub fn generate_with_modules(subscription: &Subscription, target: &str,
             .map_err(|e| format!("Cached proxies: {e}"))?;
         proxies.extend(cached);
     }
+    let proxies = crate::parser::validate_nodes(proxies)?;
+    // Apply profile-scoped smart names before filtering and policy groups.
+    let proxies = crate::identity::apply(proxies,&subscription.id,aliases)?;
     let proxies = crate::parser::validate_nodes(proxies)?;
     let proxies = crate::filter::apply(proxies,name_filter)?;
     // Nikki RS ships clash-rs-minimal, not standard/plus.
@@ -379,6 +389,23 @@ mod tests {
             rules_text:"RULE-SET,cn,DIRECT\n".into(),
             nodes_yaml:"- {name: Node, type: ss, server: example.org, port: 8388, cipher: aes-128-gcm, password: pwd}\n".into(),
             last_error:String::new(),updated_at:0,revision:0}
+    }
+    #[test]
+    fn stable_aliases_update_proxies_and_group_members_without_source_mutation() {
+        let sub=subscription();
+        let node:Value=serde_yaml::from_str(
+            "{name: Node, type: ss, server: example.org, port: 8388, cipher: aes-128-gcm, password: pwd}"
+        ).unwrap();
+        let key=crate::identity::hash(&sub.id,&node).unwrap();
+        let mut aliases=HashMap::new();
+        aliases.insert(key,"HK Premium".into());
+        let yaml=generate_with_aliases(&sub,"mihomo",
+            &crate::filter::NodeNameFilter::default(),&[],&aliases).unwrap();
+        let doc:Value=serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(doc["proxies"][0]["name"].as_str(),Some("HK Premium"));
+        assert_eq!(doc["proxy-groups"][0]["proxies"][1].as_str(),Some("HK Premium"));
+        assert_eq!(doc["proxy-groups"][1]["proxies"][0].as_str(),Some("HK Premium"));
+        assert!(sub.nodes_yaml.contains("name: Node"));
     }
     #[test]
     fn shared_upstream_rule_order_contract() {
