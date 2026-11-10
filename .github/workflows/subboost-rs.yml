@@ -32,7 +32,7 @@ jobs:
           node --check rusted/ui/app.js
           node - <<'NODE'
           const fs = require('node:fs');
-          for (const name of ['uri-parity-fixtures.json', 'rule-parity-fixtures.json', 'proxy-group-modules.json']) {
+          for (const name of ['uri-parity-fixtures.json', 'rule-parity-fixtures.json', 'node-identity-fixtures.json', 'proxy-group-modules.json']) {
             const values = JSON.parse(fs.readFileSync('rusted/data/' + name, 'utf8'));
             if (!Array.isArray(values) || values.length === 0) throw Error('Empty fixture: '+name);
             console.log(name + ': ' + values.length + ' entries');
