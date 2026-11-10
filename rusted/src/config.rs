@@ -381,6 +381,28 @@ mod tests {
             last_error:String::new(),updated_at:0,revision:0}
     }
     #[test]
+    fn shared_upstream_rule_order_contract() {
+        let fixtures:serde_json::Value=serde_json::from_str(
+            include_str!("../data/rule-parity-fixtures.json")).unwrap();
+        for fixture in fixtures.as_array().unwrap() {
+            let modules:Vec<String>=fixture["enabled_modules"].as_array().unwrap()
+                .iter().map(|m|m.as_str().unwrap().to_owned()).collect();
+            let expected:Vec<String>=fixture["expected_rules"].as_array().unwrap()
+                .iter().map(|r|r.as_str().unwrap().to_owned()).collect();
+            let mut sub=subscription();
+            sub.manual_yaml.clear();
+            sub.rules_text.clear();
+            for target in ["mihomo","clash-rs"] {
+                let yaml=generate_with_modules(&sub,target,
+                    &crate::filter::NodeNameFilter::default(),&modules).unwrap();
+                let doc:Value=serde_yaml::from_str(&yaml).unwrap();
+                let rules:Vec<String>=doc["rules"].as_sequence().unwrap()
+                    .iter().map(|r|r.as_str().unwrap().to_owned()).collect();
+                assert_eq!(rules,expected,"{} ({target})",fixture["id"]);
+            }
+        }
+    }
+    #[test]
     fn enabled_final_module_owns_the_last_match_rule() {
         let mut sub=subscription();
         sub.rules_text="DOMAIN,example.org,DIRECT\nMATCH,DIRECT".into();
