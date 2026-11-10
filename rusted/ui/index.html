@@ -30,6 +30,11 @@
 <button id="save-modules" type="button" class="primary small" disabled>保存模块配置</button>
 </div>
 <p class="muted smallprint">启用后会为所选服务生成对应策略组和 MRS 规则提供者。首次下载规则集将消耗存储空间。</p>
+<label for="rule-query">内置规则库搜索（94 条 MRS 规则）</label>
+<input id="rule-query" type="search" maxlength="128" autocomplete="off" placeholder="搜索规则名称、模块、ID 或 geosite 路径">
+<div id="rule-results" class="rule-results" role="list" aria-live="polite"></div>
+<p class="muted smallprint">选择搜索结果会勾选所属策略组；需点击「保存模块配置」后才会生效。</p>
+
 </div>
 <label for="refresh-interval">定时刷新订阅源</label>
 <select id="refresh-interval" disabled>
