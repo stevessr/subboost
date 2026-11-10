@@ -291,6 +291,56 @@ pub fn rotate(db: &Connection, id: &str) -> rusqlite::Result<bool> {
 mod tests {
     use super::*;
     #[test]
+    fn upgrades_released_v01_sqlite_without_losing_profiles() {
+        let path=std::env::temp_dir()
+            .join(format!("subboost-upgrade-{}.sqlite",random_token()));
+        {
+            let old=Connection::open(&path).unwrap();
+            old.execute_batch("
+                CREATE TABLE subscriptions(
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    token TEXT NOT NULL UNIQUE,
+                    sources_json TEXT NOT NULL,
+                    manual_yaml TEXT NOT NULL DEFAULT '',
+                    rules_text TEXT NOT NULL DEFAULT '',
+                    nodes_yaml TEXT NOT NULL DEFAULT '',
+                    last_error TEXT NOT NULL DEFAULT '',
+                    updated_at INTEGER NOT NULL
+                );
+                CREATE TABLE subscription_source_cache(
+                    subscription_id TEXT NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
+                    source_hash TEXT NOT NULL,
+                    nodes_yaml TEXT NOT NULL,
+                    fetched_at INTEGER NOT NULL,
+                    PRIMARY KEY(subscription_id,source_hash)
+                );
+                INSERT INTO subscriptions
+                    (id,name,token,sources_json,manual_yaml,rules_text,
+                     nodes_yaml,last_error,updated_at)
+                VALUES('legacy','Old profile','old-token','[]','','MATCH,Proxy',
+                    '- {name: Old}', '',100);
+            ").unwrap();
+        }
+        let db=open(&path).unwrap();
+        let profile=by_id(&db,"legacy").unwrap().unwrap();
+        assert_eq!(profile.name,"Old profile");
+        assert_eq!(profile.revision,0);
+        assert_eq!(profile.nodes_yaml,"- {name: Old}");
+        assert!(crate::templates::list(&db).unwrap().len()>=3);
+        assert!(crate::schedule::get(&db,"legacy").unwrap().is_none());
+        assert_eq!(info(&db,"legacy").unwrap().header(),None);
+        assert!(save_refresh_if_revision(&db,"legacy",0,"- {name: New}","").unwrap());
+        assert!(!save_refresh_if_revision(&db,"legacy",0,"- {name: Stale}","").unwrap());
+        assert_eq!(by_token(&db,"old-token").unwrap().unwrap().nodes_yaml,
+            "- {name: New}");
+        drop(db);
+        for suffix in ["","-wal","-shm"] {
+            let file=std::path::PathBuf::from(format!("{}{}",path.display(),suffix));
+            let _=std::fs::remove_file(file);
+        }
+    }
+    #[test]
     fn sqlite_roundtrip_and_rotation() {
         let db = open(Path::new(":memory:")).unwrap();
         let sub = create(&db, SubscriptionInput {
