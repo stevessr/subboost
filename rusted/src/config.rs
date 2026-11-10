@@ -115,8 +115,10 @@ fn adapt_clash_rs(config: &mut Mapping, token: &str) {
     let cache_ns = namespace(token);
     if let Some(providers) = get_mut(config,"rule-providers").and_then(Value::as_mapping_mut) {
         let original = std::mem::take(providers);
+        let mut entries:Vec<_>=original.into_iter().collect();
+        entries.sort_by(|a,b|a.0.as_str().cmp(&b.0.as_str()));
         let mut used = HashSet::<String>::new();
-        for (source_name, mut item) in original {
+        for (source_name, mut item) in entries {
             let old = source_name.as_str().unwrap_or("").to_owned();
             let stem = format!("subboost-{}", id(&old));
             let mut new_name = stem.clone();
@@ -132,7 +134,7 @@ fn adapt_clash_rs(config: &mut Mapping, token: &str) {
                     };
                     set(provider,"path",key(&format!(
                         "/etc/nikki-rs/providers/rule/subboost-{cache_ns}-{}.{}",
-                        id(&old), extension)));
+                        new_name.trim_start_matches("subboost-"), extension)));
                 }
             }
             renamed.insert(old,new_name.clone());
@@ -154,14 +156,26 @@ fn adapt_clash_rs(config: &mut Mapping, token: &str) {
     }
     rewrite_dns_names(config, &renamed);
     if let Some(providers) = get_mut(config,"proxy-providers").and_then(Value::as_mapping_mut) {
-        for (name, item) in providers {
-            if let Some(provider) = item.as_mapping_mut() {
-                if get(provider,"type").and_then(Value::as_str) == Some("http") {
+        let original=std::mem::take(providers);
+        let mut entries:Vec<_>=original.into_iter().collect();
+        entries.sort_by(|a,b|a.0.as_str().cmp(&b.0.as_str()));
+        let mut used=HashSet::<String>::new();
+        for (name,mut value) in entries {
+            let mut basename=format!("subboost-{}",id(name.as_str().unwrap_or("unnamed")));
+            let stem=basename.clone();
+            let mut suffix=2;
+            while !used.insert(basename.clone()){
+                basename=format!("{stem}-{suffix}");
+                suffix+=1;
+            }
+            if let Some(provider)=value.as_mapping_mut() {
+                if get(provider,"type").and_then(Value::as_str)==Some("http"){
                     set(provider,"path",key(&format!(
                         "/etc/nikki-rs/providers/proxy/subboost-{cache_ns}-{}.yaml",
-                        id(name.as_str().unwrap_or("unnamed")))));
+                        basename.trim_start_matches("subboost-"))));
                 }
             }
+            providers.insert(name,value);
         }
     }
     geo(config,"GEOSITE","geosite","geosite-download-url","geosite.dat",
@@ -202,6 +216,22 @@ pub fn generate_filtered(subscription: &Subscription, target: &str,
     }
     let proxies = crate::parser::validate_nodes(proxies)?;
     let proxies = crate::filter::apply(proxies,name_filter)?;
+    // Nikki RS ships clash-rs-minimal, not standard/plus.
+    // A valid link does not imply that the runtime implements its protocol.
+    if target != "mihomo" {
+        for proxy in &proxies {
+            match proxy["type"].as_str().unwrap_or("") {
+                "ssr" | "hysteria" | "snell" | "wireguard" | "ssh" |
+                "shadowquic" | "tailscale" | "tor" => {
+                    return Err(format!(
+                        "clash-rs-minimal cannot run {} proxies; use Mihomo or remove this node",
+                        proxy["type"].as_str().unwrap_or("unknown")
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
     if proxies.is_empty() { return Err("No proxy nodes: import/refresh a subscription first".into()); }
     let names: Vec<Value> = proxies.iter().filter_map(|p| p["name"].as_str().map(key)).collect();
     set(&mut manual,"proxies",Value::Sequence(proxies));
@@ -292,6 +322,41 @@ dns2:
         assert_eq!(doc["dns"]["fake-ip-filter"][0].as_str(),Some("rule-set:subboost-cn"));
         assert_eq!(doc["dns2"]["rules"][0]["rule-set"][0].as_str(),Some("subboost-cn"));
         assert_eq!(doc["geosite"].as_str(),Some("geosite.dat"));
+    }
+
+    #[test]
+    fn minimal_runtime_rejects_unsupported_proxy_protocols() {
+        let mut sub=subscription();
+        sub.manual_yaml.clear();
+        for kind in ["ssr","wireguard","snell"]{
+            sub.nodes_yaml=format!("- {{name: Example, type: {kind}, server: host.example, port: 443}}\n");
+            let err=generate(&sub,"clash-rs").unwrap_err();
+            assert!(err.contains("clash-rs-minimal"),"{err}");
+            assert!(generate(&sub,"mihomo").is_ok());
+        }
+    }
+    #[test]
+    fn colliding_rule_provider_names_never_share_a_cache_file() {
+        let mut sub=subscription();
+        sub.manual_yaml=r#"
+rule-providers:
+  "us/east": {type: http, behavior: domain, format: mrs, url: "https://example.org/a.mrs"}
+  "us_east": {type: http, behavior: domain, format: mrs, url: "https://example.org/b.mrs"}
+proxy-providers:
+  "HK/A": {type: http, url: "https://example.org/a"}
+  "HK_A": {type: http, url: "https://example.org/b"}
+"#.to_owned();
+        let v:Value=serde_yaml::from_str(&generate(&sub,"clash-rs").unwrap()).unwrap();
+        let rules=v["rule-providers"].as_mapping().unwrap();
+        let mut paths=std::collections::HashSet::new();
+        for (_,p) in rules{
+            assert!(paths.insert(p["path"].as_str().unwrap().to_owned()));
+        }
+        let proxies=v["proxy-providers"].as_mapping().unwrap();
+        paths.clear();
+        for (_,p) in proxies{
+            assert!(paths.insert(p["path"].as_str().unwrap().to_owned()));
+        }
     }
 
 }
