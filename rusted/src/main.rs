@@ -6,6 +6,7 @@ mod schedule;
 mod protocols;
 mod filter;
 mod metadata;
+mod identity;
 mod modules;
 mod web;
 
