@@ -108,7 +108,16 @@ return view.extend({
             return validHttpUrl(value) ? true : _('Enter an HTTP or HTTPS URL without credentials or a fragment.');
         };
 
-        o = s.option(form.Button, '_open', _('Open SubBoost editor'));
+        // Direct local launch stays available even if a pre-existing UCI
+        // base_url was preserved from the earlier hosted-only package.
+        o = s.option(form.Button, '_open_local', _('Open local SubBoost RS'));
+        o.inputstyle = 'positive';
+        o.onclick = function () {
+            window.open(localWebUrl(), '_blank', 'noopener,noreferrer');
+            return Promise.resolve();
+        };
+
+        o = s.option(form.Button, '_open', _('Open configured SubBoost editor'));
         o.inputstyle = 'action';
         o.onclick = function () {
             const url = uci.get('subboost', 'main', 'base_url') || localWebUrl();
