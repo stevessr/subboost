@@ -144,6 +144,9 @@ mod tests {
         assert_ne!(hash("different-profile",&node).unwrap(),key);
         assert!(delete_alias(&db,&profile.id,&key).unwrap());
         assert!(aliases(&db,&profile.id).unwrap().is_empty());
+        assert!(put_alias(&db,&profile.id,&key,"Temporary").unwrap());
+        crate::store::delete(&db,&profile.id).unwrap();
+        assert!(aliases(&db,&profile.id).unwrap().is_empty());
     }
     #[test]
     fn shared_upstream_node_identity_contract() {
