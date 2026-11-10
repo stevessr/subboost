@@ -2,7 +2,14 @@
   "admin/services/subboost": {
     "title": "SubBoost",
     "order": 35,
-    "action": { "type": "view", "path": "subboost/settings" },
-    "depends": { "acl": ["luci-app-subboost"], "uci": { "subboost": true } }
+    "action": {
+      "type": "view",
+      "path": "subboost/settings"
+    },
+    "depends": {
+      "acl": [
+        "luci-app-subboost"
+      ]
+    }
   }
 }

@@ -100,3 +100,27 @@ and avoids duplicate imports when old links lack the `target` query.
 For load balancing, the clash-rs adapter maps Mihomo's
 `strategy: sticky-sessions` to the clash-rs enum `strategy: sticky-session`;
 the ordinary Mihomo export remains unchanged.
+
+## LuCI menu not visible after installation
+
+The main **Services > SubBoost** entry is now gated only by the LuCI RPC
+access group `luci-app-subboost`; the optional UCI config is no longer a
+menu-visibility precondition. The package still ships a default
+`/etc/config/subboost` and retains user edits across upgrades.
+
+If a router still shows an old menu immediately after installing or updating
+the package, execute:
+
+```sh
+test -f /usr/share/luci/menu.d/luci-app-subboost.json
+test -f /usr/share/rpcd/acl.d/luci-app-subboost.json
+test -f /etc/config/subboost || printf "config settings 'main'\\n\\toption base_url 'https://subboost.org'\\n" > /etc/config/subboost
+rm -f /tmp/luci-indexcache*
+rm -rf /tmp/luci-modulecache/
+/etc/init.d/rpcd restart
+/etc/init.d/uhttpd restart
+```
+
+Log out and back in to LuCI, or use a new private window to refresh
+session-scoped access groups. The separate **Nikki RS > SubBoost** page
+belongs to the Nikki RS LuCI package and works independently.
