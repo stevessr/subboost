@@ -646,6 +646,7 @@ mod tests {
                     ("path", "ws_path"),
                     ("max-early-data", "ws_early_data"),
                     ("early-data-header-name", "ws_header"),
+                    ("v2ray-http-upgrade", "ws_upgrade"),
                 ] {
                     if let Some(value) = ws.get(source) {
                         actual.insert(target.into(), serde_json::to_value(value).unwrap());
@@ -653,6 +654,13 @@ mod tests {
                 }
                 if let Some(host) = ws.get("headers").and_then(|headers| headers.get("Host")) {
                     actual.insert("ws_host".into(), serde_json::to_value(host).unwrap());
+                }
+            }
+            if let Some(h2) = node.get("h2-opts") {
+                for (source,target) in [("path","h2_path"),("host","h2_hosts")] {
+                    if let Some(value)=h2.get(source) {
+                        actual.insert(target.into(),serde_json::to_value(value).unwrap());
+                    }
                 }
             }
             if let Some(http) = node.get("http-opts") {
@@ -665,9 +673,16 @@ mod tests {
                     actual.insert("http_hosts".into(),serde_json::to_value(hosts).unwrap());
                 }
             }
-            if let Some(service) = node.get("grpc-opts")
-                .and_then(|grpc| grpc.get("grpc-service-name")) {
-                actual.insert("grpc_service".into(), serde_json::to_value(service).unwrap());
+            if let Some(grpc)=node.get("grpc-opts") {
+                for (source,target) in [
+                    ("grpc-service-name","grpc_service"),
+                    ("_grpcType","grpc_mode"),
+                    ("_grpcAuthority","grpc_authority")
+                ] {
+                    if let Some(value)=grpc.get(source) {
+                        actual.insert(target.into(),serde_json::to_value(value).unwrap());
+                    }
+                }
             }
             let mut selected = serde_json::Map::new();
             let expected = fixture["expected"].as_object().unwrap();
