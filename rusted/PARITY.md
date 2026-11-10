@@ -88,12 +88,12 @@ but CI verification is still pending; do not mark protocol parity complete.
 
 ## Current parity test expansion (PR #9)
 
-- 16 canonical URI fixtures shared by the Rust and original TypeScript parsers.
+- 17 canonical URI fixtures shared by the Rust and original TypeScript parsers.
 - 1 canonical module-rule ordering fixture shared by both implementations.
 - VLESS: ordinary, Shadowrocket base64 authority, implicit TLS, Reality, WS, gRPC, HTTP, H2 and HTTPUpgrade paths (subset of upstream options).
 - VMess: JSON base64 + URI style, WS Early Data, gRPC, HTTP transport and TLS metadata (other upstream formats remain).
 - SS: plaintext/base64 credential variants, obfs-local, UDP-over-TCP and TCP fast-open.
-- Trojan: TCP/WS/gRPC options, SNI and default-credential handling.
+- Trojan: TCP/WS/gRPC/HTTPUpgrade options, SNI and default-credential handling.
 - Config: enabled final module now owns exactly one terminal MATCH, with a separate Mihomo canonical ordering test; clash-rs provider namespace adaptation has its own tests.
 - Rule catalog: local authenticated search of the embedded 94-rule MRS subset and one-click module selection in the WebUI. This is **not** a replacement for the original remote rule index or detection API.
 - CI includes a JavaScript syntax check for the native WebUI and JSON fixture structure checks before installing npm dependencies. Rust tests, original TypeScript tests, x86_64/aarch64 MUSL builds and runtime core smoke tests still require actual CI execution.
