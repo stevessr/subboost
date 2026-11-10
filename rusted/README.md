@@ -26,11 +26,16 @@ Environment variables:
 For OpenWrt, override data and token paths to persistent storage.
 Never expose port 3000 directly on the WAN.
 
-## Limits
-Advanced templates, multi-hop chain editing, smart node matching, scheduled
-refresh, and other cloud features are not ported in the first native release.
-Unsupported URI schemes are rejected rather than silently converted.
-Runtime requires no Node.js or PostgreSQL.
+## Feature parity and remaining gaps
+This branch adds persistent SQLite templates, scheduled refresh with bounded
+backoff, per-source last-good caches, safe regex filters and more URI protocols.
+The original SubBoost's full template modules, intelligent node matching,
+advanced group/rule graph and rule catalog are not yet feature-equivalent.
+See [PARITY.md](PARITY.md) for an auditable per-feature ledger.
+
+Unsupported proxy types for clash-rs-minimal are rejected rather than
+silently producing broken configurations. Runtime requires no Node.js or
+PostgreSQL.
 
 The native musl APK is being integrated with Nikki RS Nightly.
 
