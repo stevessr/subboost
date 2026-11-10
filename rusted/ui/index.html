@@ -25,6 +25,14 @@
 <option value="43200">每 12 小时</option>
 <option value="86400">每天</option>
 </select><p id="refresh-status" class="muted smallprint">保存配置后可设置自动刷新。</p>
+<div class="template-tools">
+<label><input id="node-filter-enabled" type="checkbox"> 启用节点名称筛选</label>
+<label for="node-filter-includes">包含匹配（每行一个正则表达式）</label>
+<textarea id="node-filter-includes" rows="2" placeholder="HK|JP|US"></textarea>
+<label for="node-filter-excludes">排除匹配（每行一个正则表达式）</label>
+<textarea id="node-filter-excludes" rows="2" placeholder="expired|过期"></textarea>
+<button id="save-node-filter" class="secondary small" type="button" disabled>保存筛选条件</button>
+</div>
 <label for="manual">节点 / 自定义 Clash YAML</label><textarea id="manual" rows="9" spellcheck="false" placeholder="proxies:&#10;  - name: Node&#10;    type: ss&#10;    server: example.com&#10;    port: 8388&#10;    cipher: aes-128-gcm&#10;    password: secret"></textarea>
 <label for="rules">自定义规则（每行一条，可留空）</label><textarea id="rules" rows="4" spellcheck="false" placeholder="DOMAIN-SUFFIX,example.com,DIRECT&#10;MATCH,Proxy"></textarea>
 <div class="actions"><button type="submit" class="primary">保存配置</button><button type="button" id="refresh" class="secondary" disabled>刷新节点</button><button type="button" id="delete" class="danger" disabled>删除</button></div></form>

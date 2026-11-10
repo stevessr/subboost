@@ -34,6 +34,9 @@ function blank() {
   el('exports').classList.add('hidden');
   el('refresh').disabled=true;el('delete').disabled=true;
   el('refresh-interval').disabled=true;el('refresh-interval').value='0';
+  el('node-filter-enabled').checked=false;
+  el('node-filter-includes').value='';el('node-filter-excludes').value='';
+  el('save-node-filter').disabled=true;
   el('refresh-status').textContent='保存配置后可设置自动刷新。';
   renderList();
 }
@@ -47,7 +50,9 @@ function show(profile) {
   el('exports').classList.remove('hidden');
   el('refresh').disabled=false;el('delete').disabled=false;
   el('refresh-interval').disabled=false;
+  el('save-node-filter').disabled=false;
   updateSchedule(profile.id);
+  updateNodeFilter(profile.id);
   el('rs-url').textContent=link(profile,'clash-rs');
   el('mihomo-url').textContent=link(profile,'mihomo');
   renderList();
@@ -107,6 +112,28 @@ el('login-form').addEventListener('submit',async(e)=>{
 });
 el('logout').addEventListener('click',()=>{
   sessionStorage.removeItem('subboost-rs-admin');admin='';profiles=[];blank();activate();
+});
+async function updateNodeFilter(id){
+  try{
+    const value=await api('/api/subscriptions/'+id+'/filter');
+    if(!current||current.id!==id)return;
+    el('node-filter-enabled').checked=!!value.enabled;
+    el('node-filter-includes').value=(value.includeRegexes||[]).join('\n');
+    el('node-filter-excludes').value=(value.excludeRegexes||[]).join('\n');
+  }catch(err){notice(err.message,true);}
+}
+el('save-node-filter').addEventListener('click',async()=>{
+  if(!current)return;
+  const id=current.id;
+  const lines=(name)=>el(name).value.split('\n').map(s=>s.trim()).filter(Boolean);
+  try{
+    await api('/api/subscriptions/'+id+'/filter',{method:'PUT',body:JSON.stringify({
+      enabled:el('node-filter-enabled').checked,
+      includeRegexes:lines('node-filter-includes'),
+      excludeRegexes:lines('node-filter-excludes')
+    })});
+    notice('筛选条件已保存，后续生成配置自动应用');
+  }catch(err){notice(err.message,true);}
 });
 async function updateSchedule(id){
   try{

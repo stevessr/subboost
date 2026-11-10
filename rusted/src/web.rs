@@ -1,4 +1,4 @@
-use crate::{config, parser, schedule, store, templates, State};
+use crate::{config, filter, parser, schedule, store, templates, State};
 use axum::{
     body::Body,
     extract::{Path, Query, State as AppState},
@@ -272,15 +272,20 @@ async fn export(AppState(state): AppState<State>,
     if !matches!(target,"mihomo"|"clash-rs"|"nikki-rs") {
         return error(StatusCode::BAD_REQUEST,"Unsupported target").into_response();
     }
-    let sub={
+    let (sub,options)={
         let db=match lock(&state) {Ok(v)=>v,Err(e)=>return e.into_response()};
-        match sql(store::by_token(&db,&token)) {
+        let sub=match sql(store::by_token(&db,&token)) {
             Ok(Some(s))=>s,
             Ok(None)=>return error(StatusCode::NOT_FOUND,"Subscription not found").into_response(),
             Err(e)=>return e.into_response(),
-        }
+        };
+        let options=match sql(filter::get(&db,&sub.id)){
+            Ok(v)=>v,
+            Err(e)=>return e.into_response(),
+        };
+        (sub,options)
     };
-    match config::generate(&sub,target) {
+    match config::generate_filtered(&sub,target,&options) {
         Ok(yaml)=>Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE,"application/yaml; charset=utf-8")
@@ -344,6 +349,35 @@ async fn templates_delete(AppState(state): AppState<State>,headers: HeaderMap,
     Ok(Json(json!({"deleted":true})))
 }
 
+async fn filter_get(AppState(state):AppState<State>, headers:HeaderMap,
+    Path(id):Path<String>) -> ApiResult<filter::NodeNameFilter>{
+    authorized(&state,&headers)?;
+    let db=lock(&state)?;
+    if sql(store::by_id(&db,&id))?.is_none(){
+        return Err(error(StatusCode::NOT_FOUND,"Subscription not found"));
+    }
+    Ok(Json(sql(filter::get(&db,&id))?))
+}
+
+async fn filter_set(AppState(state):AppState<State>, headers:HeaderMap,
+    Path(id):Path<String>,Json(input):Json<filter::NodeNameFilter>)
+    -> ApiResult<filter::NodeNameFilter>{
+    authorized(&state,&headers)?;
+    filter::validate(&input).map_err(bad)?;
+    let db=lock(&state)?;
+    if !sql(filter::put(&db,&id,&input))?{
+        return Err(error(StatusCode::NOT_FOUND,"Subscription not found"));
+    }
+    Ok(Json(input))
+}
+
+async fn filter_delete(AppState(state):AppState<State>, headers:HeaderMap,
+    Path(id):Path<String>) -> ApiResult<JsonValue>{
+    authorized(&state,&headers)?;
+    let db=lock(&state)?;
+    Ok(Json(json!({"deleted":sql(filter::delete(&db,&id))?})))
+}
+
 pub fn router(state: State) -> Router {
     Router::new()
         .route("/",get(index))
@@ -358,6 +392,8 @@ pub fn router(state: State) -> Router {
         .route("/api/subscriptions/{id}/refresh",axum::routing::post(refresh))
         .route("/api/subscriptions/{id}/schedule",
             get(schedule_get).put(schedule_set).delete(schedule_disable))
+        .route("/api/subscriptions/{id}/filter",
+            get(filter_get).put(filter_set).delete(filter_delete))
         .route("/api/subscriptions/{id}/rotate",axum::routing::post(rotate))
         .route("/api/subscriptions/{token}/config.yaml",get(export))
         .with_state(state)
