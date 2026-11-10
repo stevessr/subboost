@@ -197,7 +197,9 @@ fn transport_options(url: &Url, proxy: &mut serde_json::Value, network: &str) ->
             let (path, early_data) = ws_path_early_data(&raw_path);
             let mut opts = serde_json::json!({"path": path});
             if let Some(host) = query_param(url, "host").filter(|s| !s.is_empty()) {
-                opts["headers"] = serde_json::json!({"Host": host});
+                if let Some(first) = csv_list(&host).first() {
+                    opts["headers"] = serde_json::json!({"Host": first});
+                }
             }
             if let Some(max) = early_data {
                 opts["max-early-data"] = serde_json::json!(max);
@@ -211,7 +213,14 @@ fn transport_options(url: &Url, proxy: &mut serde_json::Value, network: &str) ->
                 .or_else(|| query_param(url, "service-name"))
                 .unwrap_or_else(|| query_param(url, "path").unwrap_or_default()
                     .trim_start_matches('/').to_owned());
-            proxy["grpc-opts"] = serde_json::json!({"grpc-service-name": service});
+            let mut opts=serde_json::json!({"grpc-service-name": service});
+            if let Some(mode)=query_param(url,"mode").filter(|s|!s.is_empty()) {
+                opts["_grpcType"]=serde_json::json!(mode);
+            }
+            if let Some(authority)=query_param(url,"authority").filter(|s|!s.is_empty()) {
+                opts["_grpcAuthority"]=serde_json::json!(authority);
+            }
+            proxy["grpc-opts"] = opts;
         },
         "h2" => {
             let path=query_param(url,"path").unwrap_or_else(||"/".into());
@@ -223,9 +232,20 @@ fn transport_options(url: &Url, proxy: &mut serde_json::Value, network: &str) ->
         },
         "http" => {
             let path = query_param(url, "path").unwrap_or_else(|| "/".into());
-            let mut opts = serde_json::json!({"path": [path]});
-            if let Some(host) = query_param(url, "host").filter(|s| !s.is_empty()) {
-                opts["headers"] = serde_json::json!({"Host": [host]});
+            let paths = csv_list(&path);
+            let mut opts = serde_json::json!({
+                "method":query_param(url,"method").unwrap_or_else(||"GET".into()).to_ascii_uppercase(),
+                "path": if paths.is_empty() { vec!["/".to_owned()] } else { paths }
+            });
+            let host = query_param(url, "host").filter(|s| !s.is_empty())
+                .or_else(||{
+                    let sni=query_param(url,"sni")?;
+                    let server=url.host_str()?;
+                    (sni!=server).then_some(sni)
+                });
+            if let Some(host) = host {
+                let hosts=csv_list(&host);
+                if !hosts.is_empty() { opts["headers"]=serde_json::json!({"Host":hosts}); }
             }
             proxy["http-opts"] = opts;
         },
