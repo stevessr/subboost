@@ -86,21 +86,62 @@ fn query_param(url: &Url, key: &str) -> Option<String> {
 fn query_bool(url: &Url, key: &str) -> bool {
     query_param(url, key).is_some_and(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
 }
+/// Mirror the upstream splitWsPathEarlyData contract: only positive, safe
+/// decimal ed values in the embedded path query are consumed.
+fn ws_path_early_data(raw: &str) -> (String, Option<u64>) {
+    let path = if raw.trim().is_empty() { "/" } else { raw.trim() };
+    let Some((base, query)) = path.split_once('?') else {
+        return (path.to_owned(), None);
+    };
+    let base = if base.is_empty() { "/" } else { base };
+    let mut kept = Vec::new();
+    let mut early_data = None;
+    for segment in query.split('&').filter(|s| !s.is_empty()) {
+        if let Some(value) = segment.strip_prefix("ed=") {
+            if early_data.is_none() && !value.is_empty()
+                && value.bytes().all(|b| b.is_ascii_digit()) {
+                if let Ok(num) = value.parse::<u64>() {
+                    if num > 0 && num <= 9_007_199_254_740_991 {
+                        early_data = Some(num);
+                        continue;
+                    }
+                }
+            }
+        }
+        kept.push(segment);
+    }
+    if early_data.is_none() {
+        return (path.to_owned(), None);
+    }
+    if kept.is_empty() {
+        (base.to_owned(), early_data)
+    } else {
+        (format!("{}?{}", base, kept.join("&")), early_data)
+    }
+}
+
 fn transport_options(url: &Url, proxy: &mut serde_json::Value, network: &str) -> Result<(), String> {
     match network {
         "tcp" | "none" => {},
         "ws" => {
-            let path = query_param(url, "path").unwrap_or_else(|| "/".into());
+            let raw_path = query_param(url, "path").unwrap_or_else(|| "/".into());
+            let (path, early_data) = ws_path_early_data(&raw_path);
             let mut opts = serde_json::json!({"path": path});
             if let Some(host) = query_param(url, "host").filter(|s| !s.is_empty()) {
                 opts["headers"] = serde_json::json!({"Host": host});
             }
-            if query_bool(url, "ed") { opts["max-early-data"] = serde_json::json!(2048); }
+            if let Some(max) = early_data {
+                opts["max-early-data"] = serde_json::json!(max);
+                opts["early-data-header-name"] = serde_json::json!("Sec-WebSocket-Protocol");
+            }
             proxy["ws-opts"] = opts;
         },
         "grpc" => {
             let service = query_param(url, "serviceName")
-                .or_else(|| query_param(url, "service-name")).unwrap_or_default();
+                .or_else(|| query_param(url, "service_name"))
+                .or_else(|| query_param(url, "service-name"))
+                .unwrap_or_else(|| query_param(url, "path").unwrap_or_default()
+                    .trim_start_matches('/').to_owned());
             proxy["grpc-opts"] = serde_json::json!({"grpc-service-name": service});
         },
         "http" => {
@@ -116,13 +157,13 @@ fn transport_options(url: &Url, proxy: &mut serde_json::Value, network: &str) ->
     Ok(())
 }
 fn tls_options(url: &Url, proxy: &mut serde_json::Value) {
-    if let Some(sni) = query_param(url, "sni").filter(|s| !s.is_empty()) {
+    if let Some(sni) = query_param(url, "sni").or_else(|| query_param(url, "peer")).filter(|s| !s.is_empty()) {
         proxy["servername"] = serde_json::json!(sni);
     }
-    if let Some(fp) = query_param(url, "fp").filter(|s| !s.is_empty()) {
+    if let Some(fp) = query_param(url, "fp").or_else(|| query_param(url, "fingerprint")).or_else(|| query_param(url, "client-fingerprint")).filter(|s| !s.is_empty()) {
         proxy["client-fingerprint"] = serde_json::json!(fp);
     }
-    if query_bool(url, "allowInsecure") || query_bool(url, "insecure") {
+    if query_bool(url, "allowInsecure") || query_bool(url, "allow_insecure") || query_bool(url, "allow-insecure") || query_bool(url, "insecure") {
         proxy["skip-cert-verify"] = serde_json::json!(true);
     }
     if let Some(alpn) = query_param(url, "alpn") {
@@ -319,6 +360,34 @@ mod tests {
         assert_eq!(parsed["client-fingerprint"].as_str(),Some("chrome"));
         assert_eq!(parsed["alpn"].as_sequence().unwrap().len(),2);
         assert!(parse_uri("vless://uuid@example.org:443?security=reality").is_err());
+    }
+    #[test]
+    fn websocket_early_data_matches_upstream_split_semantics() {
+        for (path, expected_path, expected_ed) in [
+            ("/live?ed=2048&x=1", "/live?x=1", Some(2048u64)),
+            ("/?ed=123", "/", Some(123u64)),
+            ("/live?ed=0&x=1", "/live?ed=0&x=1", None),
+            ("/live?ed=-1", "/live?ed=-1", None),
+            ("/live?ed=9007199254740992", "/live?ed=9007199254740992", None),
+            ("/live?foo=1", "/live?foo=1", None),
+            ("/live?ed=3&ed=5", "/live?ed=5", Some(3u64)),
+        ] {
+            let (actual_path, actual_ed) = ws_path_early_data(path);
+            assert_eq!(actual_path, expected_path);
+            assert_eq!(actual_ed, expected_ed);
+        }
+        let parsed = parse_uri("trojan://secret@example.org:443?type=ws&path=%2Flive%3Fed%3D1024%26x%3D1").unwrap();
+        assert_eq!(parsed["ws-opts"]["path"].as_str(), Some("/live?x=1"));
+        assert_eq!(parsed["ws-opts"]["max-early-data"].as_i64(), Some(1024));
+        assert_eq!(parsed["ws-opts"]["early-data-header-name"].as_str(), Some("Sec-WebSocket-Protocol"));
+    }
+    #[test]
+    fn grpc_aliases_and_tls_parameter_aliases() {
+        let parsed = parse_uri("vless://uuid@example.org:443?type=grpc&service_name=chat&peer=edge.example.org&fingerprint=chrome&allow_insecure=1").unwrap();
+        assert_eq!(parsed["grpc-opts"]["grpc-service-name"].as_str(), Some("chat"));
+        assert_eq!(parsed["servername"].as_str(), Some("edge.example.org"));
+        assert_eq!(parsed["client-fingerprint"].as_str(), Some("chrome"));
+        assert_eq!(parsed["skip-cert-verify"].as_bool(), Some(true));
     }
     #[test]
     fn accepts_upstream_default_tls_ports() {
