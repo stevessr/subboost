@@ -7,9 +7,13 @@ import { parseVLESS } from "./vless";
 type Node = Record<string, unknown>;
 function projection(node: Node): Record<string, unknown> {
   const result: Record<string, unknown> = {};
-  for (const name of ["name", "type", "server", "port", "network", "cipher", "password", "udp", "sni", "client-fingerprint"]) {
+  for (const name of ["name", "type", "server", "port", "network", "cipher", "password", "udp", "sni", "client-fingerprint", "plugin", "tfo"]) {
     if (node[name] !== undefined) result[name] = node[name];
   }
+  const opts = node["plugin-opts"] as Record<string, unknown> | undefined;
+  if (opts?.mode !== undefined) result.plugin_mode = opts.mode;
+  if (opts?.host !== undefined) result.plugin_host = opts.host;
+  if (node["udp-over-tcp"] !== undefined) result.udp_over_tcp = node["udp-over-tcp"];
   const ws = node["ws-opts"] as Record<string, unknown> | undefined;
   if (ws) {
     result.ws_path = ws.path;
