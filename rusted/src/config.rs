@@ -263,7 +263,16 @@ fn add_policy_modules(config:&mut Mapping,enabled:&[String])->Result<(),String>{
             trailing.push(rule);
         }else{generated.push(rule);}
     }
-    generated.extend(trailing);
+    if enabled.iter().any(|name|name=="final") {
+        // Upstream generateRules always appends one MATCH pointing at the
+        // enabled final module, after every user/module rule.
+        let final_name=modules::all().iter().find(|m|m.id=="final")
+            .ok_or("Missing final policy module")?.name.clone();
+        generated.push(key(&format!("MATCH,{final_name}")));
+    }else{
+        // No final module selected: retain the user's original fallback.
+        generated.extend(trailing);
+    }
     set(config,"proxy-groups",Value::Sequence(groups));
     set(config,"rule-providers",Value::Mapping(providers));
     set(config,"rules",Value::Sequence(generated));
@@ -370,6 +379,26 @@ mod tests {
             rules_text:"RULE-SET,cn,DIRECT\n".into(),
             nodes_yaml:"- {name: Node, type: ss, server: example.org, port: 8388, cipher: aes-128-gcm, password: pwd}\n".into(),
             last_error:String::new(),updated_at:0,revision:0}
+    }
+    #[test]
+    fn enabled_final_module_owns_the_last_match_rule() {
+        let mut sub=subscription();
+        sub.rules_text="DOMAIN,example.org,DIRECT\nMATCH,DIRECT".into();
+        let modules=vec!["select".to_owned(),"final".to_owned()];
+        for target in ["mihomo","clash-rs"] {
+            let yaml=generate_with_modules(
+                &sub,target,&crate::filter::NodeNameFilter::default(),&modules).unwrap();
+            let doc:Value=serde_yaml::from_str(&yaml).unwrap();
+            let rules=doc["rules"].as_sequence().unwrap();
+            let match_rules:Vec<_>=rules.iter().filter_map(Value::as_str)
+                .filter(|r|r.starts_with("MATCH,")).collect();
+            assert_eq!(match_rules,vec!["MATCH,🐟 漏网之鱼"]);
+            assert_eq!(rules.last().and_then(Value::as_str),Some("MATCH,🐟 漏网之鱼"));
+        }
+        let plain=generate(&sub,"mihomo").unwrap();
+        let doc:Value=serde_yaml::from_str(&plain).unwrap();
+        assert_eq!(doc["rules"].as_sequence().unwrap().last()
+            .and_then(Value::as_str),Some("MATCH,DIRECT"));
     }
     #[test]
     fn clash_rs_provider_path_and_rules_are_namespaced() {
