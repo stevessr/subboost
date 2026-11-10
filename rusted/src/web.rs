@@ -1,4 +1,4 @@
-use crate::{config, filter, metadata, modules, parser, schedule, store, templates, State};
+use crate::{config, filter, identity, metadata, modules, parser, schedule, store, templates, State};
 use axum::{
     body::Body,
     extract::{Path, Query, State as AppState},
@@ -324,7 +324,7 @@ async fn export(AppState(state): AppState<State>,
     if !matches!(target,"mihomo"|"clash-rs"|"nikki-rs") {
         return error(StatusCode::BAD_REQUEST,"Unsupported target").into_response();
     }
-    let (sub,options,subscription_info,refresh_interval,enabled_modules)={
+    let (sub,options,subscription_info,refresh_interval,enabled_modules,aliases)={
         let db=match lock(&state) {Ok(v)=>v,Err(e)=>return e.into_response()};
         let sub=match sql(store::by_token(&db,&token)) {
             Ok(Some(s))=>s,
@@ -347,9 +347,13 @@ async fn export(AppState(state): AppState<State>,
             Ok(v)=>v,
             Err(e)=>return e.into_response(),
         };
-        (sub,options,info,interval,enabled)
+        let aliases=match sql(identity::aliases(&db,&sub.id)){
+            Ok(v)=>v,
+            Err(e)=>return e.into_response(),
+        };
+        (sub,options,info,interval,enabled,aliases)
     };
-    match config::generate_with_modules(&sub,target,&options,&enabled_modules) {
+    match config::generate_with_aliases(&sub,target,&options,&enabled_modules,&aliases) {
         Ok(yaml)=>{
             // Only use percent-encoded RFC 5987 filenames to avoid header
             // injection from user-supplied configuration names.
@@ -487,6 +491,82 @@ async fn module_rules_search(
         "total_rules":modules::all().iter().map(|m|m.rules.len()).sum::<usize>()})))
 }
 
+#[derive(Deserialize)]
+struct NodeAliasInput { name:String }
+
+fn profile_nodes(sub:&store::Subscription)->Result<Vec<serde_yaml::Value>,String>{
+    let mut nodes=Vec::new();
+    if !sub.manual_yaml.trim().is_empty() {
+        let document:serde_yaml::Value=serde_yaml::from_str(&sub.manual_yaml)
+            .map_err(|e|e.to_string())?;
+        if let Some(manual)=document.get("proxies").and_then(serde_yaml::Value::as_sequence) {
+            nodes.extend(manual.iter().cloned());
+        }
+    }
+    if !sub.nodes_yaml.trim().is_empty(){
+        let cached:Vec<serde_yaml::Value>=serde_yaml::from_str(&sub.nodes_yaml)
+            .map_err(|e|e.to_string())?;
+        nodes.extend(cached);
+    }
+    parser::validate_nodes(nodes)
+}
+
+async fn profile_nodes_get(AppState(state):AppState<State>,headers:HeaderMap,
+    Path(id):Path<String>) -> ApiResult<JsonValue>{
+    authorized(&state,&headers)?;
+    let db=lock(&state)?;
+    let sub=sql(store::by_id(&db,&id))?
+        .ok_or_else(||error(StatusCode::NOT_FOUND,"Subscription not found"))?;
+    let aliases=sql(identity::aliases(&db,&id))?;
+    let nodes=profile_nodes(&sub).map_err(bad)?;
+    let mut result=Vec::with_capacity(nodes.len());
+    for node in nodes{
+        let key=identity::hash(&id,&node).map_err(bad)?;
+        result.push(json!({
+            "key":key,
+            "name":node["name"],
+            "type":node["type"],
+            "server":node["server"],
+            "port":node["port"],
+            "alias":aliases.get(&key)
+        }));
+    }
+    Ok(Json(json!(result)))
+}
+
+async fn profile_alias_set(AppState(state):AppState<State>,headers:HeaderMap,
+    Path((id,key)):Path<(String,String)>,Json(input):Json<NodeAliasInput>)
+    -> ApiResult<JsonValue>{
+    authorized(&state,&headers)?;
+    identity::validate_alias(&key,&input.name).map_err(bad)?;
+    let db=lock(&state)?;
+    let sub=sql(store::by_id(&db,&id))?
+        .ok_or_else(||error(StatusCode::NOT_FOUND,"Subscription not found"))?;
+    let nodes=profile_nodes(&sub).map_err(bad)?;
+    let mut known=false;
+    for node in &nodes {
+        if identity::hash(&id,node).map_err(bad)?==key {
+            known=true;
+            break;
+        }
+    }
+    if !known {return Err(error(StatusCode::NOT_FOUND,"Node identity not found"));}
+    if !sql(identity::put_alias(&db,&id,&key,&input.name))? {
+        return Err(error(StatusCode::NOT_FOUND,"Subscription not found"));
+    }
+    Ok(Json(json!({"key":key,"alias":input.name.trim()})))
+}
+
+async fn profile_alias_delete(AppState(state):AppState<State>,headers:HeaderMap,
+    Path((id,key)):Path<(String,String)>) -> ApiResult<JsonValue>{
+    authorized(&state,&headers)?;
+    let db=lock(&state)?;
+    if sql(store::by_id(&db,&id))?.is_none(){
+        return Err(error(StatusCode::NOT_FOUND,"Subscription not found"));
+    }
+    Ok(Json(json!({"deleted":sql(identity::delete_alias(&db,&id,&key))?})))
+}
+
 async fn modules_catalog(AppState(state):AppState<State>,headers:HeaderMap)
     -> ApiResult<Vec<modules::Module>>{
     authorized(&state,&headers)?;
@@ -566,6 +646,9 @@ pub fn router(state: State) -> Router {
         .route("/api/module-rules/search",get(module_rules_search))
         .route("/api/subscriptions/{id}/modules",
             get(profile_modules_get).put(profile_modules_set))
+        .route("/api/subscriptions/{id}/nodes",get(profile_nodes_get))
+        .route("/api/subscriptions/{id}/node-aliases/{key}",
+            axum::routing::put(profile_alias_set).delete(profile_alias_delete))
         .route("/api/templates",get(templates_list).post(templates_create))
         .route("/api/templates/import",axum::routing::post(templates_import))
         .route("/api/templates/{id}/export",get(templates_export))
