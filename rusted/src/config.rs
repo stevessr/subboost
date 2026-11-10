@@ -392,14 +392,14 @@ mod tests {
             let mut sub=subscription();
             sub.manual_yaml.clear();
             sub.rules_text.clear();
-            for target in ["mihomo","clash-rs"] {
-                let yaml=generate_with_modules(&sub,target,
-                    &crate::filter::NodeNameFilter::default(),&modules).unwrap();
-                let doc:Value=serde_yaml::from_str(&yaml).unwrap();
-                let rules:Vec<String>=doc["rules"].as_sequence().unwrap()
-                    .iter().map(|r|r.as_str().unwrap().to_owned()).collect();
-                assert_eq!(rules,expected,"{} ({target})",fixture["id"]);
-            }
+            // The upstream canonical rules are Mihomo names. Clash-rs
+            // intentionally namespaces rule-provider IDs; test that separately.
+            let yaml=generate_with_modules(&sub,"mihomo",
+                &crate::filter::NodeNameFilter::default(),&modules).unwrap();
+            let doc:Value=serde_yaml::from_str(&yaml).unwrap();
+            let rules:Vec<String>=doc["rules"].as_sequence().unwrap()
+                .iter().map(|r|r.as_str().unwrap().to_owned()).collect();
+            assert_eq!(rules,expected,"{}",fixture["id"]);
         }
     }
     #[test]
