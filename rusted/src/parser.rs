@@ -284,7 +284,7 @@ fn vless_uri(raw: &str) -> Result<(Url,bool),String> {
         .decode_utf8().map_err(|_|"Invalid encoded VLESS authority")?;
     let decoded=decode_base64(&encoded).ok_or("Invalid Shadowrocket VLESS base64")?;
     let decoded=String::from_utf8(decoded).map_err(|_|"Invalid Shadowrocket VLESS UTF-8")?;
-    let url=Url::parse(&format!("vless://{decoded}{suffix}"))
+    let url=Url::parse(&format!("vless://{decoded}?{suffix}"))
         .map_err(|e|e.to_string())?;
     Ok((url,true))
 }
