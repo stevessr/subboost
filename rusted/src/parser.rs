@@ -407,10 +407,20 @@ mod tests {
             let uri = fixture["uri"].as_str().unwrap();
             let node = parse_uri(uri).unwrap_or_else(|err| panic!("{}: {err}", fixture["id"]));
             let mut actual = serde_json::Map::new();
-            for key in ["name", "type", "server", "port", "network", "cipher", "password", "udp", "sni", "client-fingerprint"] {
+            for key in ["name", "type", "server", "port", "network", "cipher", "password", "udp", "sni", "client-fingerprint", "plugin", "tfo"] {
                 if let Some(value) = node.get(key) {
                     actual.insert(key.into(), serde_json::to_value(value).unwrap());
                 }
+            }
+            if let Some(opts) = node.get("plugin-opts") {
+                for (field, renamed) in [("mode", "plugin_mode"), ("host", "plugin_host")] {
+                    if let Some(value) = opts.get(field) {
+                        actual.insert(renamed.into(), serde_json::to_value(value).unwrap());
+                    }
+                }
+            }
+            if let Some(value) = node.get("udp-over-tcp") {
+                actual.insert("udp_over_tcp".into(), serde_json::to_value(value).unwrap());
             }
             if let Some(ws) = node.get("ws-opts") {
                 for (source, target) in [
