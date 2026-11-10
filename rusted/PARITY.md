@@ -25,7 +25,7 @@ configuration output and automated black-box coverage before marking parity.
 | Node smart matching/rename | packages/core/src/node-identity.ts | Missing | Need persistent stable identity and rename/share matching |
 | Subscription-info headers, expiry, quota | packages/server-core/src/subscription/response-headers.ts | Partial | Per-source traffic/expiry metadata + outbound Subscription-Userinfo and update interval; needs profile page URL/plan name and full upstream merge rules |
 | Rule catalog lookup/detection | local/app/api/rules/* | Partial | Authenticated search across embedded 94 MRS rules + WebUI module selection; no complete upstream rule-index, remote discovery/detection, or index auto-update |
-| Shared template import/export | local/app/api/templates/* | Partial | Local SQLite template API, no complete share/import schema |
+| Shared template import/export | local/app/api/templates/* | Partial | Versioned native JSON import/export (v1) and WebUI upload/download added; original Next.js share schema still not fully compatible |
 | Admin login/session/device management | local/app/api/auth/* | Different design | Router-local bearer token instead of upstream username/password sessions |
 | SSRF / URL pinning | packages/server-core/src/subscription/ssrf-ip.ts | Core implemented | Public IP checks + pinned DNS, no redirects, explicit private source opt-in |
 | Reproducible ARM64 size/RSS tests | N/A | Implemented in integration PR | GitHub-hosted ARM64, not physical Cortex-A53 |
@@ -101,3 +101,18 @@ but CI verification is still pending; do not mark protocol parity complete.
 **Verification gate:** This branch has not produced any GitHub Actions workflow runs.
 All added tests are authored but not yet green. Keep PR #9 unmerged and out of
 Nightly until the checks and native clash-rs tests have run successfully.
+
+## Portable native templates (PR #9)
+
+The native template API now supports `GET /api/templates/{id}/export` and
+`POST /api/templates/import` with a versioned JSON envelope:
+
+```json
+{"format":"subboost-rs-template","version":1,"name":"Example","description":"","manual_yaml":"","rules_text":"MATCH,Proxy"}
+```
+
+Imports validate the version and existing template limits before inserting a
+new SQLite record; exports exclude the internal ID and timestamps. WebUI
+upload/download buttons handle the same format. The native portability format
+is not a claim of equivalence to the original Next.js shared-template schema.
+Unit and API regression tests were added but have not executed through CI.
