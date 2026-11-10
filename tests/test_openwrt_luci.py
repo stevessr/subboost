@@ -32,6 +32,9 @@ class LuCIPackageTests(unittest.TestCase):
         self.assertIn("uci.apply()", view)
         self.assertIn("'clash-rs'", view)
         self.assertIn("validHttpUrl", view)
+        self.assertIn("ui.menu.flushCache()", view)
+        self.assertIn("localWebUrl()", view)
+        self.assertIn("Refresh LuCI services menu", view)
 
 
     def test_target_url_canonicalization_and_idempotent_sync(self):

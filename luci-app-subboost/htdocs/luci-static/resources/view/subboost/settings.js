@@ -37,6 +37,19 @@ function sameNikkiRsSubscription(left, right) {
     return first.toString() === second.toString();
 }
 
+function localWebUrl() {
+    // Use the actual router hostname instead of hardcoding 192.168.1.1.
+    const host = window.location.hostname;
+    return 'http://' + (host.includes(':') ? '[' + host + ']' : host) + ':3000';
+}
+
+function refreshMenu() {
+    // The menu tree is cached in browser sessionStorage, not only in rpcd
+    // or /tmp/luci-indexcache. Flush it before the user reloads the page.
+    ui.menu.flushCache();
+    window.location.reload();
+}
+
 function feedback(message, level) {
     ui.addNotification(null, E('p', {}, message), level || 'info');
 }
@@ -83,14 +96,14 @@ return view.extend({
         let m, s, o;
 
         m = new form.Map('subboost', _('SubBoost'),
-            _('Manage SubBoost-generated subscriptions. Conversion runs on subboost.org or your own SubBoost server; the router only stores links.'));
+            _('Manage subscriptions with your locally installed SubBoost server on this router, or use an optional remote instance.'));
 
         s = m.section(form.NamedSection, 'main', 'settings', _('SubBoost service'));
         s.addremove = false;
 
         o = s.option(form.Value, 'base_url', _('Web interface URL'));
         o.rmempty = false;
-        o.default = 'https://subboost.org';
+        o.default = localWebUrl();
         o.validate = function (sectionId, value) {
             return validHttpUrl(value) ? true : _('Enter an HTTP or HTTPS URL without credentials or a fragment.');
         };
@@ -98,13 +111,19 @@ return view.extend({
         o = s.option(form.Button, '_open', _('Open SubBoost editor'));
         o.inputstyle = 'action';
         o.onclick = function () {
-            const url = uci.get('subboost', 'main', 'base_url');
+            const url = uci.get('subboost', 'main', 'base_url') || localWebUrl();
             if (!validHttpUrl(url)) {
                 feedback(_('Save a valid web interface URL before opening it.'), 'error');
                 return Promise.resolve();
             }
             window.open(url, '_blank', 'noopener,noreferrer');
             return Promise.resolve();
+        };
+
+        o = s.option(form.Button, '_refresh_menu', _('Refresh LuCI services menu'));
+        o.inputstyle = 'action';
+        o.onclick = function () {
+            refreshMenu();
         };
 
         s = m.section(form.GridSection, 'subscription', _('Generated subscriptions'),
