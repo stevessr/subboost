@@ -73,45 +73,100 @@ fn parse_ss(raw: &str) -> Result<Value, String> {
     }))
 }
 
+fn query_param(url: &Url, key: &str) -> Option<String> {
+    url.query_pairs().find(|(k, _)| k == key).map(|(_, v)| v.into_owned())
+}
+fn query_bool(url: &Url, key: &str) -> bool {
+    query_param(url, key).is_some_and(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+}
+fn transport_options(url: &Url, proxy: &mut serde_json::Value, network: &str) -> Result<(), String> {
+    match network {
+        "tcp" | "none" => {},
+        "ws" => {
+            let path = query_param(url, "path").unwrap_or_else(|| "/".into());
+            let mut opts = serde_json::json!({"path": path});
+            if let Some(host) = query_param(url, "host").filter(|s| !s.is_empty()) {
+                opts["headers"] = serde_json::json!({"Host": host});
+            }
+            if query_bool(url, "ed") { opts["max-early-data"] = serde_json::json!(2048); }
+            proxy["ws-opts"] = opts;
+        },
+        "grpc" => {
+            let service = query_param(url, "serviceName")
+                .or_else(|| query_param(url, "service-name")).unwrap_or_default();
+            proxy["grpc-opts"] = serde_json::json!({"grpc-service-name": service});
+        },
+        "http" => {
+            let path = query_param(url, "path").unwrap_or_else(|| "/".into());
+            let mut opts = serde_json::json!({"path": [path]});
+            if let Some(host) = query_param(url, "host").filter(|s| !s.is_empty()) {
+                opts["headers"] = serde_json::json!({"Host": [host]});
+            }
+            proxy["http-opts"] = opts;
+        },
+        other => return Err(format!("Unsupported transport: {other}")),
+    }
+    Ok(())
+}
+fn tls_options(url: &Url, proxy: &mut serde_json::Value) {
+    if let Some(sni) = query_param(url, "sni").filter(|s| !s.is_empty()) {
+        proxy["servername"] = serde_json::json!(sni);
+    }
+    if let Some(fp) = query_param(url, "fp").filter(|s| !s.is_empty()) {
+        proxy["client-fingerprint"] = serde_json::json!(fp);
+    }
+    if query_bool(url, "allowInsecure") || query_bool(url, "insecure") {
+        proxy["skip-cert-verify"] = serde_json::json!(true);
+    }
+    if let Some(alpn) = query_param(url, "alpn") {
+        let entries: Vec<_> = alpn.split(',').filter(|s| !s.is_empty()).collect();
+        if !entries.is_empty() { proxy["alpn"] = serde_json::json!(entries); }
+    }
+}
 fn parse_trojan(raw: &str) -> Result<Value, String> {
     let url = Url::parse(raw).map_err(|e| e.to_string())?;
     let (server, port) = endpoint(&url)?;
     if url.username().is_empty() { return Err("Missing Trojan password".into()); }
-    let sni = url.query_pairs().find(|(k,_)| k == "sni").map(|(_,v)| v.into_owned());
+    let network = query_param(&url, "type").unwrap_or_else(|| "tcp".into());
     let mut proxy = serde_json::json!({
         "name": fragment_name(&url, &server), "type": "trojan", "server": server,
         "port": port, "password": url.username(), "tls": true,
     });
-    if let Some(sni) = sni { proxy["sni"] = serde_json::json!(sni); }
+    if let Some(sni) = query_param(&url, "sni") { proxy["sni"] = serde_json::json!(sni); }
+    tls_options(&url, &mut proxy);
+    if network != "tcp" && network != "none" {
+        proxy["network"] = serde_json::json!(network);
+    }
+    transport_options(&url, &mut proxy, &network)?;
     node(proxy)
 }
-
 fn parse_vless(raw: &str) -> Result<Value, String> {
     let url = Url::parse(raw).map_err(|e| e.to_string())?;
     let (server, port) = endpoint(&url)?;
     if url.username().is_empty() { return Err("Missing VLESS UUID".into()); }
-    let query = url.query_pairs().collect::<std::collections::HashMap<_,_>>();
-    let security = query.get("security").map(|v| v.as_ref()).unwrap_or("");
-    let network = query.get("type").map(|v| v.as_ref()).unwrap_or("tcp");
+    let security = query_param(&url, "security").unwrap_or_else(|| "none".into());
+    if !matches!(security.as_str(), "none" | "tls" | "reality") {
+        return Err(format!("Unsupported VLESS security: {security}"));
+    }
+    let network = query_param(&url, "type").unwrap_or_else(|| "tcp".into());
     let mut proxy = serde_json::json!({
         "name": fragment_name(&url, &server), "type": "vless",
         "server": server, "port": port, "uuid": url.username(),
-        "tls": matches!(security, "tls" | "reality"),
+        "tls": matches!(security.as_str(), "tls" | "reality"),
         "network": network,
     });
-    if let Some(sni) = query.get("sni") { proxy["servername"] = serde_json::json!(sni); }
-    if let Some(flow) = query.get("flow") { proxy["flow"] = serde_json::json!(flow); }
-    if network == "ws" {
-        let path = query.get("path").map(|v| v.as_ref()).unwrap_or("/");
-        let host = query.get("host").map(|v| v.as_ref()).unwrap_or("");
-        proxy["ws-opts"] = serde_json::json!({"path":path, "headers":{"Host":host}});
+    tls_options(&url, &mut proxy);
+    if let Some(flow) = query_param(&url, "flow").filter(|s| !s.is_empty()) {
+        proxy["flow"] = serde_json::json!(flow);
     }
+    transport_options(&url, &mut proxy, &network)?;
     if security == "reality" {
+        let public_key = query_param(&url, "pbk").filter(|s| !s.is_empty())
+            .ok_or("Reality public key required")?;
         proxy["reality-opts"] = serde_json::json!({
-            "public-key":query.get("pbk").map(|v| v.as_ref()).unwrap_or(""),
-            "short-id":query.get("sid").map(|v| v.as_ref()).unwrap_or(""),
+            "public-key": public_key,
+            "short-id": query_param(&url, "sid").unwrap_or_default()
         });
-        if let Some(fp) = query.get("fp") { proxy["client-fingerprint"] = serde_json::json!(fp); }
     }
     node(proxy)
 }
@@ -243,6 +298,24 @@ mod tests {
         assert_eq!(node["server"].as_str(), Some("example.net"));
     }
 
+    #[test]
+    fn vless_grpc_reality_and_tls_parameters() {
+        let link="vless://uuid@example.org:443?security=reality&pbk=publickey&sid=abcd&type=grpc&serviceName=hello&fp=chrome&sni=example.com&alpn=h2%2Chttp%2F1.1#Node";
+        let parsed=parse_uri(link).unwrap();
+        assert_eq!(parsed["grpc-opts"]["grpc-service-name"].as_str(),Some("hello"));
+        assert_eq!(parsed["reality-opts"]["public-key"].as_str(),Some("publickey"));
+        assert_eq!(parsed["client-fingerprint"].as_str(),Some("chrome"));
+        assert_eq!(parsed["alpn"].as_sequence().unwrap().len(),2);
+        assert!(parse_uri("vless://uuid@example.org:443?security=reality").is_err());
+    }
+    #[test]
+    fn trojan_websocket_transport_and_unsupported_transport() {
+        let parsed=parse_uri("trojan://secret@example.org:443?type=ws&path=%2Fchat&host=cdn.example.org&allowInsecure=1#Hello").unwrap();
+        assert_eq!(parsed["ws-opts"]["path"].as_str(),Some("/chat"));
+        assert_eq!(parsed["ws-opts"]["headers"]["Host"].as_str(),Some("cdn.example.org"));
+        assert_eq!(parsed["skip-cert-verify"].as_bool(),Some(true));
+        assert!(parse_uri("trojan://secret@example.org:443?type=splithttp").is_err());
+    }
     #[test]
     fn rejects_invalid_nodes_and_source_schemes() {
         assert!(parse_document("proxies:\n  - {name: A, type: ss, server: example.org, port: 0}").is_err());
