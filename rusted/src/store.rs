@@ -66,6 +66,7 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
         );",
     )?;
     crate::templates::initialize(&db)?;
+    crate::schedule::initialize(&db)?;
     Ok(db)
 }
 

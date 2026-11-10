@@ -2,6 +2,7 @@ mod config;
 mod parser;
 mod store;
 mod templates;
+mod schedule;
 mod web;
 
 use std::{env, net::SocketAddr, path::PathBuf, sync::{Arc, Mutex}};
