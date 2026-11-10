@@ -80,6 +80,7 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     crate::templates::initialize(&db)?;
     crate::schedule::initialize(&db)?;
     crate::filter::initialize(&db)?;
+    crate::modules::initialize(&db)?;
     db.execute_batch("CREATE TABLE IF NOT EXISTS subscription_source_cache(
         subscription_id TEXT NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
         source_hash TEXT NOT NULL,
