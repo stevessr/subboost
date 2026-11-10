@@ -42,3 +42,8 @@ Native OpenWrt APK packaging uses openwrt/subboost-rs.init, subboost-rs.config a
 ## Compact ARM64 release profile
 
 Release builds now use size-focused Rust code generation (`opt-level=s`, ThinLTO, one codegen unit, symbols stripped, abort on panic). Test builds retain unwind behavior. The A53 footprint job measures the exact architecture's static ELF size and native ARM64 RSS before reporting resource claims. ARM64 CI runners are not physical Cortex-A53 devices.
+
+
+## Fetch-side SSRF protection
+
+Remote HTTP(S) source refresh resolves every hostname first and pins the allowed addresses into the HTTP client. DNS changes cannot redirect a validated hostname to the router itself. Redirects and environment HTTP proxies are disabled. Requests to private, loopback and link-local destinations are rejected by default. To deliberately import from a trusted private server, set `uci set subboost-rs.main.allow_private_sources='1'; uci commit subboost-rs; /etc/init.d/subboost-rs restart`. Do not use this opt-in for untrusted subscriptions.

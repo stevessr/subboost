@@ -7,11 +7,12 @@ DATA=/etc/subboost-rs
 
 start_service() {
     config_load subboost-rs
-    local enabled bind port
+    local enabled bind port allow_private
     config_get_bool enabled main enabled 1
     [ "$enabled" = 1 ] || return 0
     config_get bind main bind '0.0.0.0'
     config_get port main port 3000
+    config_get_bool allow_private main allow_private_sources 0
     case "$bind" in
         *[!0-9a-zA-Z.:\[\]-]*|'') logger -t subboost-rs 'Invalid listen address'; return 1 ;;
     esac
@@ -30,6 +31,7 @@ start_service() {
     procd_set_param env "SUBBOOST_BIND=$bind:$port"
     procd_append_param env "SUBBOOST_DB=$DATA/subboost.sqlite"
     procd_append_param env "SUBBOOST_TOKEN_FILE=$DATA/admin.token"
+    procd_append_param env "SUBBOOST_ALLOW_PRIVATE_SOURCES=$allow_private"
     procd_set_param respawn 3600 5 5
     procd_set_param stderr 1
     procd_set_param stdout 1

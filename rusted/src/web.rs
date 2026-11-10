@@ -9,7 +9,7 @@ use axum::{
 };
 use serde::{Deserialize};
 use serde_json::{json, Value as JsonValue};
-use std::collections::HashMap;
+use std::{collections::HashMap, net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr}};
 use subtle::ConstantTimeEq;
 use url::Url;
 
@@ -124,12 +124,60 @@ async fn rotate(AppState(state): AppState<State>, headers: HeaderMap,
     Ok(Json(sql(store::by_id(&db,&id))?.ok_or_else(||error(StatusCode::NOT_FOUND,"Not found"))?))
 }
 
-async fn fetch_source(client: &reqwest::Client, source: &str) -> Result<Vec<serde_yaml::Value>, String> {
+/// Treat all non-globally routable destinations as off-limits by default.
+fn public_ipv4(ip:Ipv4Addr)->bool {
+    let o=ip.octets();
+    !(ip.is_private() || ip.is_loopback() || ip.is_link_local() ||
+      ip.is_unspecified() || ip.is_multicast() || ip.is_documentation() ||
+      ip.is_broadcast() || o[0]==0 || o[0]>=240 ||
+      (o[0]==100 && (64..128).contains(&o[1])) ||
+      (o[0]==198 && (18..=19).contains(&o[1])) ||
+      (o[0]==192 && o[1]==0 && o[2]==0))
+}
+fn public_ip(addr:IpAddr)->bool {
+    match addr {
+        IpAddr::V4(v)=>public_ipv4(v),
+        IpAddr::V6(v)=>{
+            if let Some(mapped)=v.to_ipv4_mapped(){return public_ipv4(mapped);}
+            let seg=v.segments();
+            !(v.is_loopback() || v.is_unspecified() || v.is_multicast() ||
+              v.is_unique_local() || v.is_unicast_link_local() ||
+              (seg[0]==0x2001 && seg[1]==0x0db8) ||
+              (seg[0]&0xffc0)==0xfec0)
+        }
+    }
+}
+
+/// Pin all DNS answers into the client, so name rebinding cannot bypass the
+/// private-address restriction between validation and HTTP connection.
+/// Redirects and environment-configured HTTP proxies are always disabled.
+async fn source_client(source:&Url)->Result<reqwest::Client,String>{
+    let host=source.host_str().ok_or("Source has no host")?;
+    let port=source.port_or_known_default().ok_or("Missing source port")?;
+    let addresses:Vec<SocketAddr>=tokio::net::lookup_host((host,port))
+        .await.map_err(|e|format!("DNS lookup: {e}"))?.collect();
+    if addresses.is_empty(){return Err("Source DNS returned no addresses".into());}
+    let allow_private=std::env::var("SUBBOOST_ALLOW_PRIVATE_SOURCES")
+        .map(|v|v=="1").unwrap_or(false);
+    if !allow_private && addresses.iter().any(|addr|!public_ip(addr.ip())){
+        return Err("Private, loopback or reserved source address is blocked".into());
+    }
+    reqwest::Client::builder()
+        .resolve_to_addrs(host,&addresses)
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .timeout(std::time::Duration::from_secs(20))
+        .user_agent("SubBoost-RS/0.2")
+        .build().map_err(|e|e.to_string())
+}
+
+async fn fetch_source(_client: &reqwest::Client, source: &str) -> Result<Vec<serde_yaml::Value>, String> {
     let parsed = Url::parse(source).map_err(|e|e.to_string())?;
     if !matches!(parsed.scheme(),"http"|"https") || parsed.host_str().is_none() {
         return Err("Source must be HTTP(S)".into());
     }
     // Explicitly refuse redirects; redirects can bypass admin-selected URL.
+    let client=source_client(&parsed).await?;
     let mut response=client.get(source).send().await.map_err(|e|e.to_string())?;
     if !response.status().is_success() {return Err(format!("Source HTTP status {}",response.status()));}
     if response.content_length().map(|n|n>3*1024*1024).unwrap_or(false) {
@@ -320,6 +368,17 @@ mod tests {
     use super::*;
     use axum::http::Request;
     use tower::ServiceExt;
+    #[test]
+    fn protects_private_addresses_and_mapped_ipv6() {
+        for ip in ["127.0.0.1","10.0.0.1","192.168.1.1","100.64.0.1",
+                   "198.18.0.1","169.254.1.1","224.0.0.1","0.0.0.0",
+                   "::1","fd00::1","fe80::1","::ffff:127.0.0.1"] {
+            assert!(!public_ip(ip.parse().unwrap()),"{ip}");
+        }
+        for ip in ["1.1.1.1","8.8.8.8","2606:4700:4700::1111"] {
+            assert!(public_ip(ip.parse().unwrap()),"{ip}");
+        }
+    }
     #[tokio::test]
     async fn authenticated_crud_and_public_export() {
         let db=store::open(std::path::Path::new(":memory:")).unwrap();
