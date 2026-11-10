@@ -15,7 +15,11 @@ class LuCIPackageTests(unittest.TestCase):
     def test_luci_menu_and_acl(self):
         menu = json.loads((PACKAGE / "root/usr/share/luci/menu.d/luci-app-subboost.json").read_text())
         acl = json.loads((PACKAGE / "root/usr/share/rpcd/acl.d/luci-app-subboost.json").read_text())
-        self.assertEqual(menu["admin/services/subboost"]["action"]["path"], "subboost/settings")
+        entry = menu["admin/services/subboost"]
+        self.assertEqual(entry["action"]["path"], "subboost/settings")
+        self.assertEqual(entry["depends"]["acl"], ["luci-app-subboost"])
+        # A missing/preserved UCI config must not make the menu invisible.
+        self.assertNotIn("uci", entry["depends"])
         self.assertIn("nikki-rs", acl["luci-app-subboost"]["write"]["uci"])
         self.assertIn("subboost", acl["luci-app-subboost"]["write"]["uci"])
 
