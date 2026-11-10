@@ -2,16 +2,59 @@
 <body><div class="shell"><aside><div class="brand">◈ SubBoost <small>RS / Local</small></div><div class="nav">订阅工作台</div><div class="aside-footer">Rust · SQLite · OpenWrt</div></aside>
 <main><header><div><div class="eyebrow">SUBSCRIPTION MANAGER</div><h1>订阅工作台</h1><p class="muted">本地多源节点管理、配置生成与 Nikki-RS 适配。</p></div><button type="button" class="secondary hidden" id="logout">退出</button></header>
 <div id="notice" class="notice hidden" role="status" aria-live="polite"></div>
-<section id="login" class="panel login"><div class="eyebrow">ADMIN ACCESS</div><h2>输入本机管理员令牌</h2><p class="muted">在路由器 SSH 执行 <code>subboost-rs token</code>。管理令牌只保存在当前浏览器会话。</p><form id="login-form"><label for="token">管理员令牌</label><input id="token" type="password" autocomplete="off" required><button class="primary" type="submit">登录</button></form></section>
+<section id="login" class="panel login"><div class="eyebrow">ADMIN ACCESS</div><h2>输入本机管理员令牌</h2><p class="muted">在路由器 SSH 执行 <code>subboost-rsctl token</code>（OpenWrt）。管理令牌只保存在当前浏览器会话。</p><form id="login-form"><label for="token">管理员令牌</label><input id="token" type="password" autocomplete="off" required><button class="primary" type="submit">登录</button></form></section>
 <div id="workspace" class="hidden"><div class="stats"><div class="panel"><span>订阅配置</span><strong id="count">0</strong></div><div class="panel"><span>后端</span><strong>Native Rust</strong></div><div class="panel"><span>持久化</span><strong>SQLite</strong></div></div><div class="grid">
 <section class="panel"><div class="heading"><h2>订阅列表</h2><button type="button" class="primary small" id="new">+ 新建</button></div><div id="profiles"></div></section>
 <section class="panel"><div class="heading"><h2 id="editor-title">新建订阅</h2><span class="chip">本地服务</span></div><form id="edit">
 <label for="name">配置名称</label><input id="name" required maxlength="128" placeholder="家庭网络">
 <label for="sources">订阅源 URL（每行一个）</label><textarea id="sources" rows="4" placeholder="https://example.com/subscription"></textarea>
+<div class="template-tools">
+<label for="template-select">配置模板</label>
+<select id="template-select"><option value="">请选择预设或已保存模板</option></select>
+<div class="actions"><button id="apply-template" type="button" class="secondary small">应用模板</button>
+<button id="save-template" type="button" class="secondary small">保存为模板</button>
+<button id="delete-template" type="button" class="danger small">删除模板</button></div>
+</div>
+<div class="template-tools">
+<label for="module-preset">策略组模块（与原版 SubBoost 同步）</label>
+<select id="module-preset">
+<option value="">选择预设（不会自动保存）</option>
+<option value="minimal">精简版（7 组）</option>
+<option value="standard">标准版（14 组）</option>
+<option value="full">完整版（除默认关闭模块）</option>
+</select>
+<label for="modules-select">启用模块（可多选）</label>
+<select id="modules-select" multiple size="9" disabled></select>
+<div class="actions">
+<button id="apply-module-preset" type="button" class="secondary small">应用预设</button>
+<button id="save-modules" type="button" class="primary small" disabled>保存模块配置</button>
+</div>
+<p class="muted smallprint">启用后会为所选服务生成对应策略组和 MRS 规则提供者。首次下载规则集将消耗存储空间。</p>
+</div>
+<label for="refresh-interval">定时刷新订阅源</label>
+<select id="refresh-interval" disabled>
+<option value="0">关闭</option>
+<option value="360">每 6 分钟</option>
+<option value="900">每 15 分钟</option>
+<option value="3600">每小时</option>
+<option value="21600">每 6 小时</option>
+<option value="43200">每 12 小时</option>
+<option value="86400">每天</option>
+</select><p id="refresh-status" class="muted smallprint">保存配置后可设置自动刷新。</p>
+<div class="template-tools">
+<label><input id="node-filter-enabled" type="checkbox"> 启用节点名称筛选</label>
+<label for="node-filter-includes">包含匹配（每行一个正则表达式）</label>
+<textarea id="node-filter-includes" rows="2" placeholder="HK|JP|US"></textarea>
+<label for="node-filter-excludes">排除匹配（每行一个正则表达式）</label>
+<textarea id="node-filter-excludes" rows="2" placeholder="expired|过期"></textarea>
+<button id="save-node-filter" class="secondary small" type="button" disabled>保存筛选条件</button>
+</div>
 <label for="manual">节点 / 自定义 Clash YAML</label><textarea id="manual" rows="9" spellcheck="false" placeholder="proxies:&#10;  - name: Node&#10;    type: ss&#10;    server: example.com&#10;    port: 8388&#10;    cipher: aes-128-gcm&#10;    password: secret"></textarea>
 <label for="rules">自定义规则（每行一条，可留空）</label><textarea id="rules" rows="4" spellcheck="false" placeholder="DOMAIN-SUFFIX,example.com,DIRECT&#10;MATCH,Proxy"></textarea>
 <div class="actions"><button type="submit" class="primary">保存配置</button><button type="button" id="refresh" class="secondary" disabled>刷新节点</button><button type="button" id="delete" class="danger" disabled>删除</button></div></form>
 <div id="exports" class="hidden exports"><div class="heading"><h3>生成订阅 URL</h3><button id="rotate" class="text-button" type="button">重置令牌</button></div>
 <label>Nikki-RS / clash-rs</label><button id="copy-rs" class="secondary small" type="button">复制</button><output id="rs-url"></output>
-<label>Mihomo</label><button id="copy-mihomo" class="secondary small" type="button">复制</button><output id="mihomo-url"></output></div>
+<label>Mihomo</label><button id="copy-mihomo" class="secondary small" type="button">复制</button><output id="mihomo-url"></output>
+<p id="quota-status" class="muted smallprint" aria-live="polite">尚无订阅流量数据。</p>
+</div>
 </section></div><p class="muted foot">当前原生版本支持 SQLite、Clash YAML 与常见 URI 节点导入、规则编辑以及 Nikki-RS 配置输出。高级模板与智能规则功能仍在逐步移植。</p></div></main></div></body></html>

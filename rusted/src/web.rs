@@ -1,4 +1,4 @@
-use crate::{config, parser, store, State};
+use crate::{config, filter, metadata, modules, parser, schedule, store, templates, State};
 use axum::{
     body::Body,
     extract::{Path, Query, State as AppState},
@@ -7,8 +7,9 @@ use axum::{
     routing::get,
     Json, Router,
 };
+use serde::{Deserialize};
 use serde_json::{json, Value as JsonValue};
-use std::collections::HashMap;
+use std::{collections::HashMap, net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr}};
 use subtle::ConstantTimeEq;
 use url::Url;
 
@@ -123,14 +124,66 @@ async fn rotate(AppState(state): AppState<State>, headers: HeaderMap,
     Ok(Json(sql(store::by_id(&db,&id))?.ok_or_else(||error(StatusCode::NOT_FOUND,"Not found"))?))
 }
 
-async fn fetch_source(client: &reqwest::Client, source: &str) -> Result<Vec<serde_yaml::Value>, String> {
+/// Treat all non-globally routable destinations as off-limits by default.
+fn public_ipv4(ip:Ipv4Addr)->bool {
+    let o=ip.octets();
+    !(ip.is_private() || ip.is_loopback() || ip.is_link_local() ||
+      ip.is_unspecified() || ip.is_multicast() || ip.is_documentation() ||
+      ip.is_broadcast() || o[0]==0 || o[0]>=240 ||
+      (o[0]==100 && (64..128).contains(&o[1])) ||
+      (o[0]==198 && (18..=19).contains(&o[1])) ||
+      (o[0]==192 && o[1]==0 && o[2]==0))
+}
+fn public_ip(addr:IpAddr)->bool {
+    match addr {
+        IpAddr::V4(v)=>public_ipv4(v),
+        IpAddr::V6(v)=>{
+            if let Some(mapped)=v.to_ipv4_mapped(){return public_ipv4(mapped);}
+            let seg=v.segments();
+            !(v.is_loopback() || v.is_unspecified() || v.is_multicast() ||
+              v.is_unique_local() || v.is_unicast_link_local() ||
+              (seg[0]==0x2001 && seg[1]==0x0db8) ||
+              (seg[0]&0xffc0)==0xfec0)
+        }
+    }
+}
+
+/// Pin all DNS answers into the client, so name rebinding cannot bypass the
+/// private-address restriction between validation and HTTP connection.
+/// Redirects and environment-configured HTTP proxies are always disabled.
+async fn source_client(source:&Url)->Result<reqwest::Client,String>{
+    let host=source.host_str().ok_or("Source has no host")?;
+    let port=source.port_or_known_default().ok_or("Missing source port")?;
+    let addresses:Vec<SocketAddr>=tokio::net::lookup_host((host,port))
+        .await.map_err(|e|format!("DNS lookup: {e}"))?.collect();
+    if addresses.is_empty(){return Err("Source DNS returned no addresses".into());}
+    let allow_private=std::env::var("SUBBOOST_ALLOW_PRIVATE_SOURCES")
+        .map(|v|v=="1").unwrap_or(false);
+    if !allow_private && addresses.iter().any(|addr|!public_ip(addr.ip())){
+        return Err("Private, loopback or reserved source address is blocked".into());
+    }
+    reqwest::Client::builder()
+        .resolve_to_addrs(host,&addresses)
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .timeout(std::time::Duration::from_secs(20))
+        .user_agent("SubBoost-RS/0.2")
+        .build().map_err(|e|e.to_string())
+}
+
+async fn fetch_source(_client: &reqwest::Client, source: &str)
+    -> Result<(Vec<serde_yaml::Value>,metadata::SubscriptionInfo), String> {
     let parsed = Url::parse(source).map_err(|e|e.to_string())?;
     if !matches!(parsed.scheme(),"http"|"https") || parsed.host_str().is_none() {
         return Err("Source must be HTTP(S)".into());
     }
     // Explicitly refuse redirects; redirects can bypass admin-selected URL.
+    let client=source_client(&parsed).await?;
     let mut response=client.get(source).send().await.map_err(|e|e.to_string())?;
     if !response.status().is_success() {return Err(format!("Source HTTP status {}",response.status()));}
+    let source_info=response.headers().get("subscription-userinfo")
+        .and_then(|v|v.to_str().ok()).map(metadata::SubscriptionInfo::parse)
+        .unwrap_or_default();
     if response.content_length().map(|n|n>3*1024*1024).unwrap_or(false) {
         return Err("Source is too large".into());
     }
@@ -140,33 +193,129 @@ async fn fetch_source(client: &reqwest::Client, source: &str) -> Result<Vec<serd
         bytes.extend_from_slice(&chunk);
     }
     let data=String::from_utf8(bytes).map_err(|_| "Source is not UTF-8")?;
-    parser::parse_document(&data)
+    Ok((parser::parse_document(&data)?,source_info))
+}
+
+pub(crate) async fn refresh_profile(state:&State,id:&str) -> Result<store::Subscription,ApiError> {
+    let original={
+        let db=lock(state)?;
+        sql(store::by_id(&db,id))?.ok_or_else(||error(StatusCode::NOT_FOUND,"Not found"))?
+    };
+    let mut nodes=Vec::new();
+    let mut successful=Vec::<(String,String,metadata::SubscriptionInfo)>::new();
+    let mut combined_info=metadata::SubscriptionInfo::default();
+    let mut failures=Vec::<String>::new();
+    // Each successful source is persisted independently; one bad source
+    // must not erase nodes obtained from another source.
+    for source in &original.source_urls {
+        match fetch_source(&state.client,source).await {
+            Ok((found,source_info))=>{
+                let yaml=serde_yaml::to_string(&found).map_err(bad)?;
+                nodes.extend(found);
+                combined_info.merge(&source_info);
+                successful.push((source.clone(),yaml,source_info));
+            }
+            Err(e)=>{
+                let host=Url::parse(source)
+                    .ok().and_then(|u|u.host_str().map(str::to_owned))
+                    .unwrap_or_else(||"source".into());
+                failures.push(format!("{host}: {e}"));
+                let (cached,source_info)={
+                    let db=lock(state)?;
+                    (sql(store::source_nodes(&db,id,source))?,
+                     sql(store::source_info(&db,id,source))?)
+                };
+                if let Some(cached)=cached {
+                    match serde_yaml::from_str::<Vec<serde_yaml::Value>>(&cached) {
+                        Ok(previous)=>{
+                            nodes.extend(previous);
+                            combined_info.merge(&source_info);
+                        },
+                        Err(e)=>failures.push(format!("{host}: cached nodes invalid: {e}"))
+                    }
+                }
+            }
+        }
+    }
+    let error_message=failures.join("; ");
+    if !original.source_urls.is_empty() && successful.is_empty() {
+        // Keep the known-good full snapshot and report a retryable failure.
+        let db=lock(state)?;
+        if !sql(store::save_refresh_if_revision(&db,id,original.revision,
+                &original.nodes_yaml,&error_message))?{
+            return Err(error(StatusCode::CONFLICT,"Profile changed during refresh"));
+        }
+        sql(schedule::complete(&db,id,false))?;
+        return Err(error(StatusCode::BAD_GATEWAY,error_message));
+    }
+    let nodes=match parser::validate_nodes(nodes) {
+        Ok(nodes)=>nodes,
+        Err(message)=>{
+            let db=lock(state)?;
+            if !sql(store::save_refresh_if_revision(&db,id,original.revision,
+                    &original.nodes_yaml,&message))?{
+                return Err(error(StatusCode::CONFLICT,"Profile changed during refresh"));
+            }
+            sql(schedule::complete(&db,id,false))?;
+            return Err(bad(message));
+        }
+    };
+    if original.source_urls.len()>0 && nodes.is_empty(){
+        let message="All subscription sources returned zero nodes";
+        let db=lock(state)?;
+        if !sql(store::save_refresh_if_revision(&db,id,original.revision,
+                &original.nodes_yaml,message))?{
+            return Err(error(StatusCode::CONFLICT,"Profile changed during refresh"));
+        }
+        sql(schedule::complete(&db,id,false))?;
+        return Err(bad(message));
+    }
+    let yaml=serde_yaml::to_string(&nodes).map_err(bad)?;
+    let db=lock(state)?;
+    if !sql(store::commit_refresh_if_revision(&db,id,original.revision,&yaml,
+             &error_message,&successful,Some(&combined_info)))?{
+        return Err(error(StatusCode::CONFLICT,"Profile changed during refresh"));
+    }
+    sql(schedule::complete(&db,id,failures.is_empty()))?;
+    sql(store::by_id(&db,id))?.ok_or_else(||error(StatusCode::NOT_FOUND,"Not found"))
 }
 
 async fn refresh(AppState(state): AppState<State>, headers: HeaderMap,
                  Path(id): Path<String>) -> ApiResult<store::Subscription> {
     authorized(&state,&headers)?;
-    let original={
-        let db=lock(&state)?;
-        sql(store::by_id(&db,&id))?.ok_or_else(||error(StatusCode::NOT_FOUND,"Not found"))?
-    };
-    let mut nodes=Vec::new();
-    for source in &original.source_urls {
-        match fetch_source(&state.client,source).await {
-            Ok(found)=>nodes.extend(found),
-            Err(e)=>{
-                let message=format!("Failed {}: {e}",Url::parse(source).map(|u|u.host_str().unwrap_or("source").to_owned()).unwrap_or_else(|_|"source".into()));
-                let db=lock(&state)?;
-                sql(store::save_refresh(&db,&id,&original.nodes_yaml,&message))?;
-                return Err(error(StatusCode::BAD_GATEWAY,message));
-            }
-        }
-    }
-    let nodes=parser::validate_nodes(nodes).map_err(bad)?;
-    let yaml=serde_yaml::to_string(&nodes).map_err(bad)?;
+    Ok(Json(refresh_profile(&state,&id).await?))
+}
+
+#[derive(Deserialize)]
+struct ScheduleInput { interval_seconds:i64 }
+
+async fn schedule_get(AppState(state):AppState<State>, headers:HeaderMap,
+    Path(id):Path<String>) -> ApiResult<Option<schedule::Schedule>> {
+    authorized(&state,&headers)?;
     let db=lock(&state)?;
-    sql(store::save_refresh(&db,&id,&yaml,""))?;
-    Ok(Json(sql(store::by_id(&db,&id))?.ok_or_else(||error(StatusCode::NOT_FOUND,"Not found"))?))
+    if sql(store::by_id(&db,&id))?.is_none() {
+        return Err(error(StatusCode::NOT_FOUND,"Subscription not found"));
+    }
+    Ok(Json(sql(schedule::get(&db,&id))?))
+}
+
+async fn schedule_set(AppState(state):AppState<State>, headers:HeaderMap,
+    Path(id):Path<String>,Json(input):Json<ScheduleInput>)
+    -> ApiResult<schedule::Schedule> {
+    authorized(&state,&headers)?;
+    if !(schedule::MIN_INTERVAL..=schedule::MAX_INTERVAL).contains(&input.interval_seconds) {
+        return Err(bad("Auto refresh interval must be 360-604800 seconds"));
+    }
+    let db=lock(&state)?;
+    sql(schedule::set(&db,&id,input.interval_seconds))?.map(Json)
+        .ok_or_else(||error(StatusCode::NOT_FOUND,"Subscription not found"))
+}
+
+async fn schedule_disable(AppState(state):AppState<State>, headers:HeaderMap,
+    Path(id):Path<String>) -> ApiResult<JsonValue> {
+    authorized(&state,&headers)?;
+    let db=lock(&state)?;
+    Ok(Json(json!({"disabled":sql(schedule::disable(&db,&id))?})))
 }
 
 async fn export(AppState(state): AppState<State>,
@@ -175,23 +324,177 @@ async fn export(AppState(state): AppState<State>,
     if !matches!(target,"mihomo"|"clash-rs"|"nikki-rs") {
         return error(StatusCode::BAD_REQUEST,"Unsupported target").into_response();
     }
-    let sub={
+    let (sub,options,subscription_info,refresh_interval,enabled_modules)={
         let db=match lock(&state) {Ok(v)=>v,Err(e)=>return e.into_response()};
-        match sql(store::by_token(&db,&token)) {
+        let sub=match sql(store::by_token(&db,&token)) {
             Ok(Some(s))=>s,
             Ok(None)=>return error(StatusCode::NOT_FOUND,"Subscription not found").into_response(),
             Err(e)=>return e.into_response(),
-        }
+        };
+        let options=match sql(filter::get(&db,&sub.id)){
+            Ok(v)=>v,
+            Err(e)=>return e.into_response(),
+        };
+        let info=match sql(store::info(&db,&sub.id)){
+            Ok(v)=>v,
+            Err(e)=>return e.into_response(),
+        };
+        let interval=match sql(schedule::get(&db,&sub.id)){
+            Ok(v)=>v.map(|s|s.interval_seconds),
+            Err(e)=>return e.into_response(),
+        };
+        let enabled=match sql(modules::get(&db,&sub.id)){
+            Ok(v)=>v,
+            Err(e)=>return e.into_response(),
+        };
+        (sub,options,info,interval,enabled)
     };
-    match config::generate(&sub,target) {
-        Ok(yaml)=>Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE,"application/yaml; charset=utf-8")
-            .header(header::CACHE_CONTROL,"no-store")
-            .header("x-content-type-options","nosniff")
-            .body(Body::from(yaml)).unwrap(),
+    match config::generate_with_modules(&sub,target,&options,&enabled_modules) {
+        Ok(yaml)=>{
+            // Only use percent-encoded RFC 5987 filenames to avoid header
+            // injection from user-supplied configuration names.
+            let encoded=percent_encoding::utf8_percent_encode(
+                &sub.name,percent_encoding::NON_ALPHANUMERIC).to_string();
+            let mut response=Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE,"text/yaml; charset=utf-8")
+                .header(header::CONTENT_DISPOSITION,
+                    format!("attachment; filename*=UTF-8''{encoded}"))
+                .header(header::CACHE_CONTROL,"no-store")
+                .header("x-content-type-options","nosniff");
+            if let Some(quota)=subscription_info.header(){
+                response=response.header("subscription-userinfo",quota);
+            }
+            if let Some(seconds)=refresh_interval {
+                response=response.header("profile-update-interval",
+                    ((seconds+3599)/3600).max(1).to_string());
+            }
+            response.body(Body::from(yaml)).unwrap()
+        },
         Err(e)=>error(StatusCode::UNPROCESSABLE_ENTITY,e).into_response(),
     }
+}
+
+fn validate_template(input: &templates::TemplateInput) -> Result<(), ApiError> {
+    if input.name.trim().is_empty() || input.name.len()>128 ||
+        input.description.len()>512 || input.manual_yaml.len()>512*1024 ||
+        input.rules_text.len()>128*1024 {
+        return Err(bad("Template name must be 1-128 characters and body within limits"));
+    }
+    if !input.manual_yaml.trim().is_empty() {
+        let doc: serde_yaml::Value=serde_yaml::from_str(&input.manual_yaml)
+            .map_err(|e|bad(format!("Invalid template YAML: {e}")))?;
+        if doc.as_mapping().is_none() { return Err(bad("Template YAML must be a mapping")); }
+    }
+    Ok(())
+}
+
+async fn templates_list(AppState(state): AppState<State>,headers: HeaderMap)
+    -> ApiResult<Vec<templates::Template>> {
+    authorized(&state,&headers)?;
+    let db=lock(&state)?;
+    Ok(Json(sql(templates::list(&db))?))
+}
+async fn templates_get(AppState(state): AppState<State>,headers: HeaderMap,Path(id):Path<String>)
+    -> ApiResult<templates::Template> {
+    authorized(&state,&headers)?;
+    let db=lock(&state)?;
+    sql(templates::get(&db,&id))?.map(Json)
+        .ok_or_else(||error(StatusCode::NOT_FOUND,"Template not found"))
+}
+async fn templates_create(AppState(state): AppState<State>,headers: HeaderMap,
+    Json(input):Json<templates::TemplateInput>) -> ApiResult<templates::Template> {
+    authorized(&state,&headers)?;
+    validate_template(&input)?;
+    let db=lock(&state)?;
+    Ok(Json(sql(templates::create(&db,input))?))
+}
+async fn templates_update(AppState(state): AppState<State>,headers: HeaderMap,
+    Path(id):Path<String>,Json(input):Json<templates::TemplateInput>)
+    -> ApiResult<templates::Template> {
+    authorized(&state,&headers)?;
+    validate_template(&input)?;
+    let db=lock(&state)?;
+    sql(templates::update(&db,&id,input))?.map(Json)
+        .ok_or_else(||error(StatusCode::NOT_FOUND,"Template not found or built-in"))
+}
+async fn templates_delete(AppState(state): AppState<State>,headers: HeaderMap,
+    Path(id):Path<String>) -> ApiResult<JsonValue> {
+    authorized(&state,&headers)?;
+    let db=lock(&state)?;
+    if !sql(templates::delete(&db,&id))? {
+        return Err(error(StatusCode::NOT_FOUND,"Template not found or built-in"));
+    }
+    Ok(Json(json!({"deleted":true})))
+}
+
+async fn modules_catalog(AppState(state):AppState<State>,headers:HeaderMap)
+    -> ApiResult<Vec<modules::Module>>{
+    authorized(&state,&headers)?;
+    Ok(Json(modules::all().to_vec()))
+}
+
+async fn profile_modules_get(AppState(state):AppState<State>,headers:HeaderMap,
+    Path(id):Path<String>) -> ApiResult<Vec<String>>{
+    authorized(&state,&headers)?;
+    let db=lock(&state)?;
+    if sql(store::by_id(&db,&id))?.is_none(){
+        return Err(error(StatusCode::NOT_FOUND,"Subscription not found"));
+    }
+    Ok(Json(sql(modules::get(&db,&id))?))
+}
+
+#[derive(Deserialize)]
+struct ModuleSelection { enabled:Vec<String> }
+
+async fn profile_modules_set(AppState(state):AppState<State>,headers:HeaderMap,
+    Path(id):Path<String>,Json(input):Json<ModuleSelection>) -> ApiResult<Vec<String>>{
+    authorized(&state,&headers)?;
+    modules::validate(&input.enabled).map_err(bad)?;
+    let db=lock(&state)?;
+    if !sql(modules::put(&db,&id,&input.enabled))?{
+        return Err(error(StatusCode::NOT_FOUND,"Subscription not found"));
+    }
+    Ok(Json(input.enabled))
+}
+
+async fn subscription_info(AppState(state):AppState<State>, headers:HeaderMap,
+    Path(id):Path<String>) -> ApiResult<metadata::SubscriptionInfo> {
+    authorized(&state,&headers)?;
+    let db=lock(&state)?;
+    if sql(store::by_id(&db,&id))?.is_none(){
+        return Err(error(StatusCode::NOT_FOUND,"Subscription not found"));
+    }
+    Ok(Json(sql(store::info(&db,&id))?))
+}
+
+async fn filter_get(AppState(state):AppState<State>, headers:HeaderMap,
+    Path(id):Path<String>) -> ApiResult<filter::NodeNameFilter>{
+    authorized(&state,&headers)?;
+    let db=lock(&state)?;
+    if sql(store::by_id(&db,&id))?.is_none(){
+        return Err(error(StatusCode::NOT_FOUND,"Subscription not found"));
+    }
+    Ok(Json(sql(filter::get(&db,&id))?))
+}
+
+async fn filter_set(AppState(state):AppState<State>, headers:HeaderMap,
+    Path(id):Path<String>,Json(input):Json<filter::NodeNameFilter>)
+    -> ApiResult<filter::NodeNameFilter>{
+    authorized(&state,&headers)?;
+    filter::validate(&input).map_err(bad)?;
+    let db=lock(&state)?;
+    if !sql(filter::put(&db,&id,&input))?{
+        return Err(error(StatusCode::NOT_FOUND,"Subscription not found"));
+    }
+    Ok(Json(input))
+}
+
+async fn filter_delete(AppState(state):AppState<State>, headers:HeaderMap,
+    Path(id):Path<String>) -> ApiResult<JsonValue>{
+    authorized(&state,&headers)?;
+    let db=lock(&state)?;
+    Ok(Json(json!({"deleted":sql(filter::delete(&db,&id))?})))
 }
 
 pub fn router(state: State) -> Router {
@@ -200,9 +503,20 @@ pub fn router(state: State) -> Router {
         .route("/app.js",get(js))
         .route("/style.css",get(css))
         .route("/api/health/live",get(health))
+        .route("/api/modules",get(modules_catalog))
+        .route("/api/subscriptions/{id}/modules",
+            get(profile_modules_get).put(profile_modules_set))
+        .route("/api/templates",get(templates_list).post(templates_create))
+        .route("/api/templates/{id}",get(templates_get).put(templates_update)
+            .delete(templates_delete))
         .route("/api/subscriptions",get(list).post(create))
         .route("/api/subscriptions/{id}",get(detail).put(update).delete(delete))
         .route("/api/subscriptions/{id}/refresh",axum::routing::post(refresh))
+        .route("/api/subscriptions/{id}/schedule",
+            get(schedule_get).put(schedule_set).delete(schedule_disable))
+        .route("/api/subscriptions/{id}/info",get(subscription_info))
+        .route("/api/subscriptions/{id}/filter",
+            get(filter_get).put(filter_set).delete(filter_delete))
         .route("/api/subscriptions/{id}/rotate",axum::routing::post(rotate))
         .route("/api/subscriptions/{token}/config.yaml",get(export))
         .with_state(state)
@@ -213,6 +527,17 @@ mod tests {
     use super::*;
     use axum::http::Request;
     use tower::ServiceExt;
+    #[test]
+    fn protects_private_addresses_and_mapped_ipv6() {
+        for ip in ["127.0.0.1","10.0.0.1","192.168.1.1","100.64.0.1",
+                   "198.18.0.1","169.254.1.1","224.0.0.1","0.0.0.0",
+                   "::1","fd00::1","fe80::1","::ffff:127.0.0.1"] {
+            assert!(!public_ip(ip.parse().unwrap()),"{ip}");
+        }
+        for ip in ["1.1.1.1","8.8.8.8","2606:4700:4700::1111"] {
+            assert!(public_ip(ip.parse().unwrap()),"{ip}");
+        }
+    }
     #[tokio::test]
     async fn authenticated_crud_and_public_export() {
         let db=store::open(std::path::Path::new(":memory:")).unwrap();
@@ -221,6 +546,10 @@ mod tests {
             manual_yaml:"proxies:\n  - {name: A, type: ss, server: example.org, port: 8388, cipher: aes-128-gcm, password: pwd}\n".into(),
             rules_text:String::new(),
         }).unwrap();
+        let info=metadata::SubscriptionInfo::parse(
+            "upload=1024; download=2048; total=8192; expire=1800000000");
+        assert!(store::commit_refresh_if_revision(&db,&sub.id,sub.revision,
+            "", "", &[],Some(&info)).unwrap());
         let state=State {db:std::sync::Arc::new(std::sync::Mutex::new(db)),
             admin_token:std::sync::Arc::new("s".repeat(43)),
             client:reqwest::Client::new()};
@@ -236,5 +565,8 @@ mod tests {
             .uri(format!("/api/subscriptions/{}/config.yaml?target=clash-rs",sub.token))
             .body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(yaml.status(),StatusCode::OK);
+        assert_eq!(yaml.headers().get("subscription-userinfo").unwrap(),
+            "upload=1024; download=2048; total=8192; expire=1800000000");
+        assert!(yaml.headers().get("content-disposition").is_some());
     }
 }

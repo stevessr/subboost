@@ -1,5 +1,5 @@
 //! Safe generated Clash configuration with clash-rs / Nikki RS adaptation.
-use crate::store::Subscription;
+use crate::{store::Subscription,modules};
 use serde_yaml::{Mapping, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -115,8 +115,10 @@ fn adapt_clash_rs(config: &mut Mapping, token: &str) {
     let cache_ns = namespace(token);
     if let Some(providers) = get_mut(config,"rule-providers").and_then(Value::as_mapping_mut) {
         let original = std::mem::take(providers);
+        let mut entries:Vec<_>=original.into_iter().collect();
+        entries.sort_by(|a,b|a.0.as_str().cmp(&b.0.as_str()));
         let mut used = HashSet::<String>::new();
-        for (source_name, mut item) in original {
+        for (source_name, mut item) in entries {
             let old = source_name.as_str().unwrap_or("").to_owned();
             let stem = format!("subboost-{}", id(&old));
             let mut new_name = stem.clone();
@@ -132,7 +134,7 @@ fn adapt_clash_rs(config: &mut Mapping, token: &str) {
                     };
                     set(provider,"path",key(&format!(
                         "/etc/nikki-rs/providers/rule/subboost-{cache_ns}-{}.{}",
-                        id(&old), extension)));
+                        new_name.trim_start_matches("subboost-"), extension)));
                 }
             }
             renamed.insert(old,new_name.clone());
@@ -154,14 +156,26 @@ fn adapt_clash_rs(config: &mut Mapping, token: &str) {
     }
     rewrite_dns_names(config, &renamed);
     if let Some(providers) = get_mut(config,"proxy-providers").and_then(Value::as_mapping_mut) {
-        for (name, item) in providers {
-            if let Some(provider) = item.as_mapping_mut() {
-                if get(provider,"type").and_then(Value::as_str) == Some("http") {
+        let original=std::mem::take(providers);
+        let mut entries:Vec<_>=original.into_iter().collect();
+        entries.sort_by(|a,b|a.0.as_str().cmp(&b.0.as_str()));
+        let mut used=HashSet::<String>::new();
+        for (name,mut value) in entries {
+            let mut basename=format!("subboost-{}",id(name.as_str().unwrap_or("unnamed")));
+            let stem=basename.clone();
+            let mut suffix=2;
+            while !used.insert(basename.clone()){
+                basename=format!("{stem}-{suffix}");
+                suffix+=1;
+            }
+            if let Some(provider)=value.as_mapping_mut() {
+                if get(provider,"type").and_then(Value::as_str)==Some("http"){
                     set(provider,"path",key(&format!(
                         "/etc/nikki-rs/providers/proxy/subboost-{cache_ns}-{}.yaml",
-                        id(name.as_str().unwrap_or("unnamed")))));
+                        basename.trim_start_matches("subboost-"))));
                 }
             }
+            providers.insert(name,value);
         }
     }
     geo(config,"GEOSITE","geosite","geosite-download-url","geosite.dat",
@@ -179,7 +193,93 @@ fn adapt_clash_rs(config: &mut Mapping, token: &str) {
         "https://cdn.jsdelivr.net/gh/DustinWin/ruleset_geodata@mihomo-geodata/Country-ASN.mmdb");
 }
 
+/// Add the canonical upstream modules as opt-in policy groups and rule-set
+/// providers. Disabled for existing profiles to keep v0.1 configuration
+/// behavior unchanged. The source catalog contains 36 modules / 94 rules.
+fn add_policy_modules(config:&mut Mapping,enabled:&[String])->Result<(),String>{
+    modules::validate(enabled)?;
+    if enabled.is_empty(){return Ok(());}
+    let ordered=modules::ordered(enabled);
+    let proxies=config.get(key("proxies")).and_then(Value::as_sequence)
+        .ok_or("No proxies for enabled modules")?;
+    let names:Vec<Value>=proxies.iter().filter_map(|p|p["name"].as_str().map(key)).collect();
+    let mut groups=config.get(key("proxy-groups"))
+        .and_then(Value::as_sequence).cloned().unwrap_or_default();
+    let mut group_names:HashSet<String>=groups.iter()
+        .filter_map(|v|v["name"].as_str().map(str::to_owned)).collect();
+    let mut providers=config.get(key("rule-providers"))
+        .and_then(Value::as_mapping).cloned().unwrap_or_default();
+    let mut generated=Vec::<Value>::new();
+    let mut used_rules=HashSet::<String>::new();
+    for module in ordered{
+        if group_names.insert(module.name.clone()){
+            let primary=match module.group_type.as_str(){
+                "reject-first"=>vec![key("REJECT"),key("DIRECT"),key("Proxy")],
+                "direct-first"=>vec![key("DIRECT"),key("Proxy")],
+                "select" if module.id=="select"=>{
+                    let mut entries=vec![key("Auto")];
+                    entries.extend(names.iter().cloned());
+                    entries.push(key("DIRECT"));
+                    entries
+                },
+                _=>vec![key("Proxy"),key("DIRECT")]
+            };
+            let group=if matches!(module.group_type.as_str(),"url-test"|"fallback"|"load-balance"){
+                serde_yaml::to_value(serde_json::json!({
+                    "name":module.name,"type":module.group_type,
+                    "proxies":names,"url":"https://www.gstatic.com/generate_204",
+                    "interval":300
+                })).map_err(|e|e.to_string())?
+            }else{
+                serde_yaml::to_value(serde_json::json!({
+                    "name":module.name,"type":"select","proxies":primary
+                })).map_err(|e|e.to_string())?
+            };
+            groups.push(group);
+        }
+        for rule in &module.rules{
+            if !used_rules.insert(rule.id.clone()){continue;}
+            if !providers.contains_key(key(&rule.id)){
+                let url=format!(
+                    "https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/meta/geo/{}",
+                    rule.path);
+                providers.insert(key(&rule.id),
+                    serde_yaml::to_value(serde_json::json!({
+                        "type":"http","format":"mrs","behavior":rule.behavior,
+                        "url":url,"path":format!("./rules/{}",rule.path),
+                        "interval":86400
+                    })).map_err(|e|e.to_string())?);
+            }
+            let mut text=format!("RULE-SET,{},{name}",rule.id,name=module.name);
+            if rule.no_resolve{text.push_str(",no-resolve");}
+            generated.push(key(&text));
+        }
+    }
+    let current=config.get(key("rules")).and_then(Value::as_sequence)
+        .cloned().unwrap_or_default();
+    let mut trailing=Vec::<Value>::new();
+    for rule in current{
+        if rule.as_str().map(|v|v.starts_with("MATCH,")).unwrap_or(false){
+            trailing.push(rule);
+        }else{generated.push(rule);}
+    }
+    generated.extend(trailing);
+    set(config,"proxy-groups",Value::Sequence(groups));
+    set(config,"rule-providers",Value::Mapping(providers));
+    set(config,"rules",Value::Sequence(generated));
+    Ok(())
+}
+
 pub fn generate(subscription: &Subscription, target: &str) -> Result<String, String> {
+    generate_filtered(subscription,target,&crate::filter::NodeNameFilter::default())
+}
+pub fn generate_filtered(subscription: &Subscription, target: &str,
+    name_filter:&crate::filter::NodeNameFilter) -> Result<String,String> {
+    generate_with_modules(subscription,target,name_filter,&[])
+}
+pub fn generate_with_modules(subscription: &Subscription, target: &str,
+    name_filter:&crate::filter::NodeNameFilter, enabled_modules:&[String]
+) -> Result<String,String> {
     if !matches!(target,"mihomo"|"clash-rs"|"nikki-rs") {
         return Err("Unsupported target (mihomo or clash-rs)".into());
     }
@@ -197,29 +297,52 @@ pub fn generate(subscription: &Subscription, target: &str) -> Result<String, Str
         proxies.extend(cached);
     }
     let proxies = crate::parser::validate_nodes(proxies)?;
+    let proxies = crate::filter::apply(proxies,name_filter)?;
+    // Nikki RS ships clash-rs-minimal, not standard/plus.
+    // A valid link does not imply that the runtime implements its protocol.
+    if target != "mihomo" {
+        for proxy in &proxies {
+            match proxy["type"].as_str().unwrap_or("") {
+                "ssr" | "hysteria" | "snell" | "wireguard" | "ssh" |
+                "shadowquic" | "tailscale" | "tor" => {
+                    return Err(format!(
+                        "clash-rs-minimal cannot run {} proxies; use Mihomo or remove this node",
+                        proxy["type"].as_str().unwrap_or("unknown")
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
     if proxies.is_empty() { return Err("No proxy nodes: import/refresh a subscription first".into()); }
     let names: Vec<Value> = proxies.iter().filter_map(|p| p["name"].as_str().map(key)).collect();
     set(&mut manual,"proxies",Value::Sequence(proxies));
     let mut selector = vec![key("Auto")];
     selector.extend(names.clone());
     selector.push(key("DIRECT"));
-    let groups = vec![
-        serde_yaml::to_value(serde_json::json!({"name":"Proxy","type":"select","proxies":selector}))
-            .map_err(|e|e.to_string())?,
-        serde_yaml::to_value(serde_json::json!({
-            "name":"Auto","type":"url-test","proxies":names,
-            "url":"https://www.gstatic.com/generate_204","interval":300
-        })).map_err(|e|e.to_string())?,
-    ];
-    // A manual YAML's custom proxy groups can extend the built-ins.
-    let mut groups = groups;
-    if let Some(existing) = get(&manual,"proxy-groups").and_then(Value::as_sequence) {
-        for group in existing {
-            if !matches!(group["name"].as_str(),Some("Proxy"|"Auto")) {
-                groups.push(group.clone());
-            }
+    let default_proxy=serde_yaml::to_value(serde_json::json!({
+        "name":"Proxy","type":"select","proxies":selector
+    })).map_err(|e|e.to_string())?;
+    let default_auto=serde_yaml::to_value(serde_json::json!({
+        "name":"Auto","type":"url-test","proxies":names,
+        "url":"https://www.gstatic.com/generate_204","interval":300
+    })).map_err(|e|e.to_string())?;
+    // Preserve explicit user-defined Proxy / Auto policy groups, including
+    // load balancing, fallback, provider references and health checks.
+    let existing=get(&manual,"proxy-groups").and_then(Value::as_sequence)
+        .cloned().unwrap_or_default();
+    let mut seen=HashSet::<String>::new();
+    for group in &existing {
+        let name=group["name"].as_str().unwrap_or("");
+        if name.is_empty() {return Err("Proxy-group name must not be empty".into());}
+        if !seen.insert(name.to_owned()){
+            return Err(format!("Duplicate proxy-group name: {name}"));
         }
     }
+    let mut groups=Vec::new();
+    if !seen.contains("Proxy"){groups.push(default_proxy);}
+    if !seen.contains("Auto"){groups.push(default_auto);}
+    groups.extend(existing);
     set(&mut manual,"proxy-groups",Value::Sequence(groups));
     let rules: Vec<Value> = subscription.rules_text.lines()
         .map(str::trim).filter(|s| !s.is_empty() && !s.starts_with('#'))
@@ -233,6 +356,7 @@ pub fn generate(subscription: &Subscription, target: &str) -> Result<String, Str
     }
     set(&mut manual,"rules",Value::Sequence(rules));
     set(&mut manual,"mode", key("rule"));
+    add_policy_modules(&mut manual,enabled_modules)?;
     if target != "mihomo" { adapt_clash_rs(&mut manual, &subscription.token); }
     serde_yaml::to_string(&Value::Mapping(manual)).map_err(|e|e.to_string())
 }
@@ -245,7 +369,7 @@ mod tests {
             source_urls:vec![], manual_yaml: "rule-providers:\n  cn:\n    type: http\n    behavior: domain\n    format: mrs\n    url: https://example.org/cn.mrs\n".into(),
             rules_text:"RULE-SET,cn,DIRECT\n".into(),
             nodes_yaml:"- {name: Node, type: ss, server: example.org, port: 8388, cipher: aes-128-gcm, password: pwd}\n".into(),
-            last_error:String::new(),updated_at:0}
+            last_error:String::new(),updated_at:0,revision:0}
     }
     #[test]
     fn clash_rs_provider_path_and_rules_are_namespaced() {
@@ -287,6 +411,98 @@ dns2:
         assert_eq!(doc["dns"]["fake-ip-filter"][0].as_str(),Some("rule-set:subboost-cn"));
         assert_eq!(doc["dns2"]["rules"][0]["rule-set"][0].as_str(),Some("subboost-cn"));
         assert_eq!(doc["geosite"].as_str(),Some("geosite.dat"));
+    }
+
+    #[test]
+    fn minimal_runtime_rejects_unsupported_proxy_protocols() {
+        let mut sub=subscription();
+        sub.manual_yaml.clear();
+        for kind in ["ssr","wireguard","snell"]{
+            sub.nodes_yaml=format!("- {{name: Example, type: {kind}, server: host.example, port: 443}}\n");
+            let err=generate(&sub,"clash-rs").unwrap_err();
+            assert!(err.contains("clash-rs-minimal"),"{err}");
+            assert!(generate(&sub,"mihomo").is_ok());
+        }
+    }
+    #[test]
+    fn colliding_rule_provider_names_never_share_a_cache_file() {
+        let mut sub=subscription();
+        sub.manual_yaml=r#"
+rule-providers:
+  "us/east": {type: http, behavior: domain, format: mrs, url: "https://example.org/a.mrs"}
+  "us_east": {type: http, behavior: domain, format: mrs, url: "https://example.org/b.mrs"}
+proxy-providers:
+  "HK/A": {type: http, url: "https://example.org/a"}
+  "HK_A": {type: http, url: "https://example.org/b"}
+"#.to_owned();
+        let v:Value=serde_yaml::from_str(&generate(&sub,"clash-rs").unwrap()).unwrap();
+        let rules=v["rule-providers"].as_mapping().unwrap();
+        let mut paths=std::collections::HashSet::new();
+        for (_,p) in rules{
+            assert!(paths.insert(p["path"].as_str().unwrap().to_owned()));
+        }
+        let proxies=v["proxy-providers"].as_mapping().unwrap();
+        paths.clear();
+        for (_,p) in proxies{
+            assert!(paths.insert(p["path"].as_str().unwrap().to_owned()));
+        }
+    }
+
+    #[test]
+    fn opt_in_full_upstream_modules_generate_policy_groups_and_mrs_paths() {
+        let sub=subscription();
+        let ids=modules::preset("standard").unwrap();
+        let generated=generate_with_modules(&sub,"clash-rs",
+            &crate::filter::NodeNameFilter::default(),&ids).unwrap();
+        let v:Value=serde_yaml::from_str(&generated).unwrap();
+        let groups=v["proxy-groups"].as_sequence().unwrap();
+        for expected in ["🤖 AI 服务","📹 油管视频","🛑 广告拦截",
+                         "🚀 节点选择","⚡ 自动选择"]{
+            assert!(groups.iter().any(|g|g["name"].as_str()==Some(expected)), "{expected}");
+        }
+        let provider=&v["rule-providers"]["subboost-openai"];
+        assert_eq!(provider["format"].as_str(),Some("mrs"));
+        assert!(provider["path"].as_str().unwrap().starts_with(
+            "/etc/nikki-rs/providers/rule/subboost-"));
+        let rules=v["rules"].as_sequence().unwrap();
+        assert!(rules.iter().any(|r|r.as_str().unwrap_or("")
+            .starts_with("RULE-SET,subboost-openai,")));
+        let custom=generate(&sub,"clash-rs").unwrap();
+        assert!(!custom.contains("🤖 AI 服务"));
+    }
+
+    #[test]
+    fn rejects_unknown_policy_module_ids() {
+        let sub=subscription();
+        let error=generate_with_modules(&sub,"mihomo",
+            &crate::filter::NodeNameFilter::default(),
+            &["not-in-catalog".to_owned()]).unwrap_err();
+        assert!(error.contains("Unknown policy module"),"{error}");
+    }
+
+    #[test]
+    fn preserves_explicit_manual_advanced_proxy_groups() {
+        let mut sub=subscription();
+        sub.manual_yaml=r#"
+proxy-groups:
+  - name: Proxy
+    type: select
+    proxies: [Auto, DIRECT]
+  - name: Auto
+    type: load-balance
+    proxies: [Node]
+    strategy: sticky-sessions
+  - name: Custom
+    type: fallback
+    proxies: [Node, DIRECT]
+    interval: 120
+"#.to_owned();
+        let v:Value=serde_yaml::from_str(&generate(&sub,"clash-rs").unwrap()).unwrap();
+        let groups=v["proxy-groups"].as_sequence().unwrap();
+        assert_eq!(groups.len(),3);
+        assert_eq!(groups[1]["strategy"].as_str(),Some("sticky-session"));
+        assert_eq!(groups[2]["interval"].as_i64(),Some(120));
+        assert_eq!(groups[0]["proxies"][0].as_str(),Some("Auto"));
     }
 
 }
