@@ -56,6 +56,7 @@ function show(profile) {
   el('rs-url').textContent=link(profile,'clash-rs');
   el('mihomo-url').textContent=link(profile,'mihomo');
   renderList();
+  updateQuota(profile.id);
 }
 function renderList() {
   el('count').textContent=String(profiles.length);
@@ -71,6 +72,24 @@ function renderList() {
   });
   if(!profiles.length){const p=document.createElement('p');p.className='muted';
     p.textContent='暂无配置，点击「新建」开始。';panel.append(p);}
+}
+async function updateQuota(id) {
+  try {
+    const info=await api('/api/subscriptions/'+id+'/info');
+    if(!current||current.id!==id)return;
+    const parts=[];
+    const gib=(v)=>(v/1073741824).toFixed(2)+' GiB';
+    if(info.total!==null&&info.total!==undefined){
+      const used=(info.upload||0)+(info.download||0);
+      parts.push('已用 '+gib(used)+' / 总计 '+gib(info.total));
+    }
+    if(info.expire!==null&&info.expire!==undefined){
+      parts.push('到期 '+new Date(info.expire*1000).toLocaleDateString());
+    }
+    el('quota-status').textContent=parts.length?parts.join(' · '):'订阅源暂无流量元数据';
+  }catch(err){
+    if(current&&current.id===id) el('quota-status').textContent='读取流量数据失败';
+  }
 }
 async function reloadTemplates() {
   savedTemplates = await api('/api/templates');

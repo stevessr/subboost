@@ -52,3 +52,8 @@ Release builds now use size-focused Rust code generation (`opt-level=s`, ThinLTO
 ## Fetch-side SSRF protection
 
 Remote HTTP(S) source refresh resolves every hostname first and pins the allowed addresses into the HTTP client. DNS changes cannot redirect a validated hostname to the router itself. Redirects and environment HTTP proxies are disabled. Requests to private, loopback and link-local destinations are rejected by default. To deliberately import from a trusted private server, set `uci set subboost-rs.main.allow_private_sources='1'; uci commit subboost-rs; /etc/init.d/subboost-rs restart`. Do not use this opt-in for untrusted subscriptions.
+
+
+## Subscription metadata compatibility
+
+The native backend now stores per-source Subscription-Userinfo traffic and expiry metadata in SQLite. Partial-source outages retain each source's last known quota values. Generated YAML responses include Subscription-Userinfo, a safe UTF-8 Content-Disposition filename and Profile-Update-Interval where an automatic refresh schedule is configured. Metadata is also exposed to the authenticated WebUI under GET /api/subscriptions/{id}/info.

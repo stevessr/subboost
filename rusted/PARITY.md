@@ -23,7 +23,7 @@ configuration output and automated black-box coverage before marking parity.
 | Remote MRS rule providers | packages/core/src/generator/clash-rs.ts | Partial | Namespace, path, DNS refs and collision handling; need semantic fixtures with upstream output |
 | DNS2, GeoIP and GeoSite | packages/core/src/generator/dns.ts | Partial | Basic DB path, provider reference rewrites, not full defaults |
 | Node smart matching/rename | packages/core/src/node-identity.ts | Missing | Need persistent stable identity and rename/share matching |
-| Subscription-info headers, expiry, quota | packages/server-core/src/subscription/response-headers.ts | Missing | Need metadata extraction/storage/response parity |
+| Subscription-info headers, expiry, quota | packages/server-core/src/subscription/response-headers.ts | Partial | Per-source traffic/expiry metadata + outbound Subscription-Userinfo and update interval; needs profile page URL/plan name and full upstream merge rules |
 | Rule catalog lookup/detection | local/app/api/rules/* | Missing | Rule dataset, discovery, UI and automatic updates |
 | Shared template import/export | local/app/api/templates/* | Partial | Local SQLite template API, no complete share/import schema |
 | Admin login/session/device management | local/app/api/auth/* | Different design | Router-local bearer token instead of upstream username/password sessions |

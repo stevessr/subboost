@@ -2,7 +2,7 @@
 <body><div class="shell"><aside><div class="brand">◈ SubBoost <small>RS / Local</small></div><div class="nav">订阅工作台</div><div class="aside-footer">Rust · SQLite · OpenWrt</div></aside>
 <main><header><div><div class="eyebrow">SUBSCRIPTION MANAGER</div><h1>订阅工作台</h1><p class="muted">本地多源节点管理、配置生成与 Nikki-RS 适配。</p></div><button type="button" class="secondary hidden" id="logout">退出</button></header>
 <div id="notice" class="notice hidden" role="status" aria-live="polite"></div>
-<section id="login" class="panel login"><div class="eyebrow">ADMIN ACCESS</div><h2>输入本机管理员令牌</h2><p class="muted">在路由器 SSH 执行 <code>subboost-rs token</code>。管理令牌只保存在当前浏览器会话。</p><form id="login-form"><label for="token">管理员令牌</label><input id="token" type="password" autocomplete="off" required><button class="primary" type="submit">登录</button></form></section>
+<section id="login" class="panel login"><div class="eyebrow">ADMIN ACCESS</div><h2>输入本机管理员令牌</h2><p class="muted">在路由器 SSH 执行 <code>subboost-rsctl token</code>（OpenWrt）。管理令牌只保存在当前浏览器会话。</p><form id="login-form"><label for="token">管理员令牌</label><input id="token" type="password" autocomplete="off" required><button class="primary" type="submit">登录</button></form></section>
 <div id="workspace" class="hidden"><div class="stats"><div class="panel"><span>订阅配置</span><strong id="count">0</strong></div><div class="panel"><span>后端</span><strong>Native Rust</strong></div><div class="panel"><span>持久化</span><strong>SQLite</strong></div></div><div class="grid">
 <section class="panel"><div class="heading"><h2>订阅列表</h2><button type="button" class="primary small" id="new">+ 新建</button></div><div id="profiles"></div></section>
 <section class="panel"><div class="heading"><h2 id="editor-title">新建订阅</h2><span class="chip">本地服务</span></div><form id="edit">
@@ -38,5 +38,7 @@
 <div class="actions"><button type="submit" class="primary">保存配置</button><button type="button" id="refresh" class="secondary" disabled>刷新节点</button><button type="button" id="delete" class="danger" disabled>删除</button></div></form>
 <div id="exports" class="hidden exports"><div class="heading"><h3>生成订阅 URL</h3><button id="rotate" class="text-button" type="button">重置令牌</button></div>
 <label>Nikki-RS / clash-rs</label><button id="copy-rs" class="secondary small" type="button">复制</button><output id="rs-url"></output>
-<label>Mihomo</label><button id="copy-mihomo" class="secondary small" type="button">复制</button><output id="mihomo-url"></output></div>
+<label>Mihomo</label><button id="copy-mihomo" class="secondary small" type="button">复制</button><output id="mihomo-url"></output>
+<p id="quota-status" class="muted smallprint" aria-live="polite">尚无订阅流量数据。</p>
+</div>
 </section></div><p class="muted foot">当前原生版本支持 SQLite、Clash YAML 与常见 URI 节点导入、规则编辑以及 Nikki-RS 配置输出。高级模板与智能规则功能仍在逐步移植。</p></div></main></div></body></html>
