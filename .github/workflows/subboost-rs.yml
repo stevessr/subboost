@@ -25,6 +25,19 @@ jobs:
         with:
           node-version: '24'
           cache: npm
+      - name: Validate native WebUI JS and shared fixture JSON
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check rusted/ui/app.js
+          node - <<'NODE'
+          const fs = require('node:fs');
+          for (const name of ['uri-parity-fixtures.json', 'rule-parity-fixtures.json', 'proxy-group-modules.json']) {
+            const values = JSON.parse(fs.readFileSync('rusted/data/' + name, 'utf8'));
+            if (!Array.isArray(values) || values.length === 0) throw Error('Empty fixture: '+name);
+            console.log(name + ': ' + values.length + ' entries');
+          }
+          NODE
       - run: npm ci
       - name: Check canonical URI fixtures against original TypeScript parser
         run: npx vitest run packages/core/src/parser/protocols/rs-parity.test.ts
