@@ -37,6 +37,8 @@ function blank() {
   el('node-filter-enabled').checked=false;
   el('node-filter-includes').value='';el('node-filter-excludes').value='';
   el('save-node-filter').disabled=true;
+  el('reload-node-aliases').disabled=true;
+  el('node-alias-list').replaceChildren();
   el('modules-select').disabled=true;
   el('save-modules').disabled=true;
   for(const opt of el('modules-select').options)opt.selected=false;
@@ -56,6 +58,8 @@ function show(profile) {
   el('save-node-filter').disabled=false;
   updateSchedule(profile.id);
   updateNodeFilter(profile.id);
+  el('reload-node-aliases').disabled=false;
+  updateNodeAliases(profile.id);
   el('modules-select').disabled=false;
   el('save-modules').disabled=false;
   updateProfileModules(profile.id);
@@ -237,6 +241,67 @@ async function updateNodeFilter(id){
     el('node-filter-excludes').value=(value.excludeRegexes||[]).join('\n');
   }catch(err){notice(err.message,true);}
 }
+async function updateNodeAliases(id){
+  const list=el('node-alias-list');
+  try{
+    const nodes=await api('/api/subscriptions/'+encodeURIComponent(id)+'/nodes');
+    if(!current||current.id!==id)return;
+    list.replaceChildren();
+    if(!nodes.length){
+      const message=document.createElement('p');
+      message.className='muted smallprint';
+      message.textContent='暂无节点。添加手动节点或刷新远程订阅后即可设置名称。';
+      list.append(message);return;
+    }
+    for(const node of nodes.slice(0,100)){
+      const entry=document.createElement('div');
+      entry.className='rule-result';
+      const info=document.createElement('strong');
+      info.textContent=(node.alias||node.name)+' · '+node.type+' · '+node.server+':'+node.port;
+      const buttons=document.createElement('div');
+      buttons.className='actions';
+      const rename=document.createElement('button');
+      rename.type='button';rename.className='secondary small';rename.textContent='重命名';
+      rename.addEventListener('click',async()=>{
+        const name=prompt('节点的新名称：',node.alias||node.name);
+        if(name===null)return;
+        try{
+          await api('/api/subscriptions/'+encodeURIComponent(id)+'/node-aliases/'+node.key,{
+            method:'PUT',body:JSON.stringify({name:name.trim()})
+          });
+          await updateNodeAliases(id);
+          notice('节点别名已保存，生成配置时自动使用新名称');
+        }catch(err){notice(err.message,true);}
+      });
+      buttons.append(rename);
+      if(node.alias){
+        const reset=document.createElement('button');
+        reset.type='button';reset.className='secondary small';reset.textContent='恢复原名';
+        reset.addEventListener('click',async()=>{
+          try{
+            await api('/api/subscriptions/'+encodeURIComponent(id)+'/node-aliases/'+node.key,{
+              method:'DELETE'
+            });
+            await updateNodeAliases(id);
+            notice('已恢复原始节点名称');
+          }catch(err){notice(err.message,true);}
+        });
+        buttons.append(reset);
+      }
+      entry.append(info,buttons);list.append(entry);
+    }
+    if(nodes.length>100){
+      const more=document.createElement('p');more.className='muted smallprint';
+      more.textContent='共 '+nodes.length+' 个节点，当前显示前 100 个以降低路由器管理页的内存占用';
+      list.append(more);
+    }
+  }catch(err){
+    if(current&&current.id===id)notice(err.message,true);
+  }
+}
+el('reload-node-aliases').addEventListener('click',()=>{
+  if(current)updateNodeAliases(current.id);
+});
 el('save-node-filter').addEventListener('click',async()=>{
   if(!current)return;
   const id=current.id;
