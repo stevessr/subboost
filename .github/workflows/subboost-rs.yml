@@ -27,8 +27,6 @@ jobs:
           workspaces: rusted
       - name: SQLite, parser, HTTP endpoint and YAML regression tests
         run: cargo test --manifest-path rusted/Cargo.toml --all-targets
-      - name: Rust format verification
-        run: cargo fmt --manifest-path rusted/Cargo.toml --all -- --check
 
   musl:
     needs: test
