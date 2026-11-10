@@ -11,7 +11,8 @@
       "ws_path": "/chat?foo=1",
       "ws_early_data": 2048,
       "ws_header": "Sec-WebSocket-Protocol",
-      "ws_host": "cdn.example.org"
+      "ws_host": "cdn.example.org",
+      "udp": true
     }
   },
   {
@@ -26,7 +27,9 @@
       "ws_path": "/stream?v=2",
       "ws_early_data": 512,
       "ws_header": "Sec-WebSocket-Protocol",
-      "ws_host": "www.example.org"
+      "ws_host": "www.example.org",
+      "udp": true,
+      "sni": "example.org"
     }
   },
   {
@@ -38,7 +41,8 @@
       "server": "grpc.example.org",
       "port": 443,
       "network": "grpc",
-      "grpc_service": "service/one"
+      "grpc_service": "service/one",
+      "udp": true
     }
   },
   {
@@ -50,7 +54,8 @@
       "server": "example.org",
       "port": 8388,
       "cipher": "aes-128-gcm",
-      "password": "hello:world"
+      "password": "hello:world",
+      "udp": true
     }
   },
   {
@@ -62,7 +67,8 @@
       "server": "example.org",
       "port": 443,
       "cipher": "aes-256-gcm",
-      "password": "secret!"
+      "password": "secret!",
+      "udp": true
     }
   }
 ]
