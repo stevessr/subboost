@@ -22,7 +22,7 @@ configuration output and automated black-box coverage before marking parity.
 | Rule order and builtin rule edits | packages/core/src/generator/rules.ts | Partial | Manual ordered rule lines; full rule module editing and rule-source support pending |
 | Remote MRS rule providers | packages/core/src/generator/clash-rs.ts | Partial | Namespace, path, DNS refs and collision handling; need semantic fixtures with upstream output |
 | DNS2, GeoIP and GeoSite | packages/core/src/generator/dns.ts | Partial | Basic DB path, provider reference rewrites, not full defaults |
-| Node smart matching/rename | packages/core/src/node-identity.ts | Missing | Need persistent stable identity and rename/share matching |
+| Node smart matching/rename | packages/core/src/node-identity.ts | Partial | Canonical stable JSON identity and SQLite-scoped persistent node aliases integrated with YAML generation and native WebUI; 3 shared identity fixtures; full upstream rename/share matching and advanced comparison UI still pending |
 | Subscription-info headers, expiry, quota | packages/server-core/src/subscription/response-headers.ts | Partial | Per-source traffic/expiry metadata + outbound Subscription-Userinfo and update interval; needs profile page URL/plan name and full upstream merge rules |
 | Rule catalog lookup/detection | local/app/api/rules/* | Partial | Authenticated search across embedded 94 MRS rules + WebUI module selection; no complete upstream rule-index, remote discovery/detection, or index auto-update |
 | Shared template import/export | local/app/api/templates/* | Partial | Versioned native JSON import/export (v1) and WebUI upload/download added; original Next.js share schema still not fully compatible |
@@ -116,3 +116,22 @@ new SQLite record; exports exclude the internal ID and timestamps. WebUI
 upload/download buttons handle the same format. The native portability format
 is not a claim of equivalence to the original Next.js shared-template schema.
 Unit and API regression tests were added but have not executed through CI.
+
+## Stable node identities and native smart renaming (PR #9)
+
+- Rust `identity.rs` implements the upstream canonical content identity
+  excluding display name and underscore-prefixed internal metadata, with
+  optional endpoint and SNI field ignores.
+- Three fixtures in `rusted/data/node-identity-fixtures.json` compare the
+  same identity content keys in the TypeScript and Rust implementations.
+- Profile-scoped SHA-256 opaque keys index local aliases in SQLite. The
+  database migrates in place and uses foreign-key cascading deletes.
+- Native admin endpoints list node identity hashes, create aliases and restore
+  original names, excluding node secrets from the list response.
+- Generated Mihomo and clash-rs subscriptions use aliases **before** node
+  filtering and proxy-group construction. Original provider snapshots are
+  never rewritten by manual renaming.
+- WebUI lists up to the first 100 nodes per profile to limit DOM overhead
+  on Cortex-A53 routers; this is a known UI limitation versus the original.
+- Authentication, YAML generation, SQLite persistence and alias cleanup have
+  regression tests submitted, **not yet executed by CI**.
