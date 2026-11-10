@@ -294,6 +294,37 @@ el('save-template').addEventListener('click',async()=>{
     notice('模板已保存到本机 SQLite');
   }catch(err){notice(err.message,true);}
 });
+el('export-template').addEventListener('click',async()=>{
+  const selected=savedTemplates.find(t=>t.id===el('template-select').value);
+  if(!selected){notice('请先选择需要导出的模板',true);return;}
+  try{
+    const data=await api('/api/templates/'+encodeURIComponent(selected.id)+'/export');
+    const blob=new Blob([JSON.stringify(data,null,2)+'\n'],{type:'application/json'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;a.download='subboost-rs-template-'+selected.id+'.json';
+    document.body.append(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),5000);
+    notice('模板 JSON 已导出');
+  }catch(err){notice(err.message,true);}
+});
+el('import-template').addEventListener('click',()=>el('import-template-file').click());
+el('import-template-file').addEventListener('change',async()=>{
+  const input=el('import-template-file'),file=input.files&&input.files[0];
+  if(!file)return;
+  try{
+    if(file.size>700*1024)throw Error('模板文件不得超过 700 KiB');
+    const content=JSON.parse(await file.text());
+    if(content.format!=='subboost-rs-template'||content.version!==1){
+      throw Error('只支持 SubBoost RS 模板格式 v1');
+    }
+    const saved=await api('/api/templates/import',{method:'POST',body:JSON.stringify(content)});
+    await reloadTemplates();
+    el('template-select').value=saved.id;
+    notice('已导入模板「'+saved.name+'」，可点击应用模板');
+  }catch(err){notice(err.message,true);}
+  finally{input.value='';}
+});
 el('delete-template').addEventListener('click',async()=>{
   const selected=savedTemplates.find(t=>t.id===el('template-select').value);
   if(!selected||selected.built_in){notice('请选择可删除的自定义模板',true);return;}
