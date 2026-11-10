@@ -21,6 +21,7 @@ function projection(node: Node): Record<string, unknown> {
   if (ws) {
     result.ws_path = ws.path;
     if (ws["max-early-data"] !== undefined) result.ws_early_data = ws["max-early-data"];
+    if (ws["v2ray-http-upgrade"] !== undefined) result.ws_upgrade = ws["v2ray-http-upgrade"];
     if (ws["early-data-header-name"] !== undefined) result.ws_header = ws["early-data-header-name"];
     const headers = ws.headers as Record<string, unknown> | undefined;
     if (headers?.Host !== undefined) result.ws_host = headers.Host;
@@ -32,8 +33,15 @@ function projection(node: Node): Record<string, unknown> {
     const headers = http.headers as Record<string, unknown> | undefined;
     if (headers?.Host !== undefined) result.http_hosts = headers.Host;
   }
+  const h2 = node["h2-opts"] as Record<string, unknown> | undefined;
+  if (h2) {
+    if (h2.path !== undefined) result.h2_path = h2.path;
+    if (h2.host !== undefined) result.h2_hosts = h2.host;
+  }
   const grpc = node["grpc-opts"] as Record<string, unknown> | undefined;
   if (grpc?.["grpc-service-name"] !== undefined) result.grpc_service = grpc["grpc-service-name"];
+  if (grpc?._grpcType !== undefined) result.grpc_mode = grpc._grpcType;
+  if (grpc?._grpcAuthority !== undefined) result.grpc_authority = grpc._grpcAuthority;
   return result;
 }
 
