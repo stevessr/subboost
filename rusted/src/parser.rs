@@ -39,44 +39,46 @@ fn node(value: serde_json::Value) -> Result<Value, String> {
 }
 
 fn parse_ss(raw: &str) -> Result<Value, String> {
-    // A completely base64-encoded SS URI has no parseable host until
-    // credentials and endpoint have been decoded.
-    let encoded = raw.trim_start_matches("ss://").split(['#','?']).next().unwrap_or("");
-    let fully_encoded = !encoded.contains('@');
-    let url = if fully_encoded {
-        Url::parse("ss://placeholder.example:8388").map_err(|e| e.to_string())?
-    } else {
-        Url::parse(raw).map_err(|e| e.to_string())?
-    };
-    // Some subscriptions use ss://BASE64(method:password@host:port) with no
-    // explicit @ in the outer URL. Url::parse may mistake it for a hostname.
-    let outer_auth = raw.trim_start_matches("ss://").split(['#','?']).next().unwrap_or("");
-    let (userinfo, server, port) = if fully_encoded || url.host_str().is_none() {
-        let encoded = raw.trim_start_matches("ss://").split(['#','?']).next().unwrap_or("");
-        let decoded = decode_base64(encoded).ok_or("Invalid Shadowsocks base64")?;
+    // Match the upstream SIP002 and legacy base64 encodings. Splitting at the
+    // last '@' preserves ':' characters in plaintext credentials/passwords.
+    let payload = raw.strip_prefix("ss://").ok_or("Invalid Shadowsocks scheme")?;
+    let main = payload.split(['?', '#']).next().unwrap_or("");
+    let fully_encoded = !main.contains('@');
+    let (credentials, server, port) = if fully_encoded {
+        let encoded = percent_encoding::percent_decode_str(main)
+            .decode_utf8().map_err(|_| "Invalid Shadowsocks encoding")?;
+        let decoded = decode_base64(&encoded).ok_or("Invalid Shadowsocks base64")?;
         let inner = String::from_utf8(decoded).map_err(|_| "Invalid Shadowsocks UTF-8")?;
         let (auth, remote) = inner.rsplit_once('@').ok_or("Missing Shadowsocks endpoint")?;
         let target = Url::parse(&format!("ss://{remote}")).map_err(|e| e.to_string())?;
         let (server, port) = endpoint(&target)?;
         (auth.to_owned(), server, port)
     } else {
+        let url = Url::parse(raw).map_err(|e| e.to_string())?;
         let (server, port) = endpoint(&url)?;
-        let auth = url.username();
-        let auth = if auth.contains(':') { auth.to_owned() }
-            else if let Some(decoded) = decode_base64(auth) {
-                String::from_utf8(decoded).map_err(|_| "Invalid Shadowsocks credentials")?
-            } else { auth.to_owned() };
-        (auth, server, port)
+        let (raw_auth, _) = main.rsplit_once('@').ok_or("Missing Shadowsocks credentials")?;
+        let auth = percent_encoding::percent_decode_str(raw_auth)
+            .decode_utf8().map_err(|_| "Invalid Shadowsocks credentials")?;
+        let credentials = if auth.contains(':') {
+            auth.into_owned()
+        } else {
+            let decoded = decode_base64(&auth).ok_or("Invalid Shadowsocks credentials base64")?;
+            String::from_utf8(decoded).map_err(|_| "Invalid Shadowsocks credentials UTF-8")?
+        };
+        (credentials, server, port)
     };
-    let (cipher, password) = userinfo.split_once(':').ok_or("Missing Shadowsocks cipher/password")?;
-    if cipher.is_empty() || password.is_empty() { return Err("Empty Shadowsocks credentials".into()); }
-    let name = if fully_encoded {
-        raw.split_once('#').map(|(_,n)| n.to_owned()).filter(|n| !n.is_empty())
-            .unwrap_or_else(|| server.clone())
-    } else { fragment_name(&url, &server) };
+    let (cipher, password) = credentials.split_once(':')
+        .ok_or("Missing Shadowsocks cipher/password")?;
+    if cipher.is_empty() || password.is_empty() {
+        return Err("Empty Shadowsocks credentials".into());
+    }
+    let name = raw.split_once('#').and_then(|(_, fragment)| {
+        (!fragment.is_empty()).then(|| percent_encoding::percent_decode_str(fragment)
+            .decode_utf8_lossy().into_owned())
+    }).unwrap_or_else(|| server.clone());
     node(serde_json::json!({
-        "name": name, "type": "ss",
-        "server": server, "port": port, "cipher": cipher, "password": password,
+        "name": name, "type": "ss", "server": server, "port": port,
+        "cipher": cipher, "password": password,
     }))
 }
 
@@ -377,6 +379,19 @@ mod tests {
         let uri = "trojan://secret@example.org:443?sni=example.org#Hello";
         let content = STANDARD.encode(format!("{uri}\n"));
         assert_eq!(parse_document(&content).unwrap()[0]["name"].as_str(),Some("Hello"));
+    }
+    #[test]
+    fn parses_plaintext_and_encoded_sip002_shadowsocks_credentials() {
+        let plaintext = parse_uri("ss://aes-128-gcm:hello%3Aworld@example.org:8388#%E6%B5%8B%E8%AF%95").unwrap();
+        assert_eq!(plaintext["cipher"].as_str(), Some("aes-128-gcm"));
+        assert_eq!(plaintext["password"].as_str(), Some("hello:world"));
+        assert_eq!(plaintext["name"].as_str(), Some("测试"));
+        let encoded = STANDARD.encode("aes-256-gcm:secret");
+        let encoded = encoded.replace('=', "%3D");
+        let uri = format!("ss://{encoded}@example.org:443#SIP002");
+        let node = parse_uri(&uri).unwrap();
+        assert_eq!(node["cipher"].as_str(), Some("aes-256-gcm"));
+        assert_eq!(node["password"].as_str(), Some("secret"));
     }
     #[test]
     fn parses_fully_base64_encoded_shadowsocks_link() {
