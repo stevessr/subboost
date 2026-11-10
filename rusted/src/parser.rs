@@ -152,11 +152,11 @@ pub fn parse_uri(uri: &str) -> Result<Value, String> {
     else if s.starts_with("trojan://") { parse_trojan(s) }
     else if s.starts_with("vless://") { parse_vless(s) }
     else if s.starts_with("vmess://") { parse_vmess(s) }
-    else { Err("Unsupported proxy URI; use Clash YAML for other protocols".into()) }
+    else { crate::protocols::parse(s) }
 }
 
 pub fn validate_nodes(nodes: Vec<Value>) -> Result<Vec<Value>, String> {
-    if nodes.len() > 4096 { return Err("Too many nodes (max 4096)".into()); }
+    if nodes.len() > 10000 { return Err("Too many nodes (max 10000)".into()); }
     let mut seen = std::collections::HashSet::<String>::new();
     let mut output = Vec::new();
     for (i, mut node) in nodes.into_iter().enumerate() {
@@ -201,7 +201,7 @@ pub fn parse_document(body: &str) -> Result<Vec<Value>, String> {
     }
     let uris: Vec<&str> = source.lines().map(str::trim)
         .filter(|s| !s.is_empty() && !s.starts_with('#')).collect();
-    if uris.len() > 4096 { return Err("Too many nodes".into()); }
+    if uris.len() > 10000 { return Err("Too many nodes".into()); }
     let mut nodes = Vec::new();
     for uri in uris { nodes.push(parse_uri(uri)?); }
     validate_nodes(nodes)
