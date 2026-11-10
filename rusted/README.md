@@ -57,3 +57,8 @@ Remote HTTP(S) source refresh resolves every hostname first and pins the allowed
 ## Subscription metadata compatibility
 
 The native backend now stores per-source Subscription-Userinfo traffic and expiry metadata in SQLite. Partial-source outages retain each source's last known quota values. Generated YAML responses include Subscription-Userinfo, a safe UTF-8 Content-Disposition filename and Profile-Update-Interval where an automatic refresh schedule is configured. Metadata is also exposed to the authenticated WebUI under GET /api/subscriptions/{id}/info.
+
+
+## Upstream policy module catalog
+
+The Rust engine embeds all 36 group definitions and 94 linked rule sets from the current original SubBoost registry, with deterministic source-to-Rust sync via `node rusted/scripts/sync-modules.cjs --check`. OpenWrt does not require Node.js. Groups are optional and saved per profile; this avoids unexpectedly downloading all remote MRS rule providers on an existing router after upgrade. The UI offers minimal (7), standard (14) and full presets. User-defined proxy groups in manual YAML retain priority over auto-generated group names. This ports the catalog, not the entire upstream advanced group editing workflow.

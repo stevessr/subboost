@@ -15,6 +15,22 @@
 <button id="save-template" type="button" class="secondary small">保存为模板</button>
 <button id="delete-template" type="button" class="danger small">删除模板</button></div>
 </div>
+<div class="template-tools">
+<label for="module-preset">策略组模块（与原版 SubBoost 同步）</label>
+<select id="module-preset">
+<option value="">选择预设（不会自动保存）</option>
+<option value="minimal">精简版（7 组）</option>
+<option value="standard">标准版（14 组）</option>
+<option value="full">完整版（除默认关闭模块）</option>
+</select>
+<label for="modules-select">启用模块（可多选）</label>
+<select id="modules-select" multiple size="9" disabled></select>
+<div class="actions">
+<button id="apply-module-preset" type="button" class="secondary small">应用预设</button>
+<button id="save-modules" type="button" class="primary small" disabled>保存模块配置</button>
+</div>
+<p class="muted smallprint">启用后会为所选服务生成对应策略组和 MRS 规则提供者。首次下载规则集将消耗存储空间。</p>
+</div>
 <label for="refresh-interval">定时刷新订阅源</label>
 <select id="refresh-interval" disabled>
 <option value="0">关闭</option>

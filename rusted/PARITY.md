@@ -16,7 +16,7 @@ configuration output and automated black-box coverage before marking parity.
 | Node name regex include/exclude | packages/core/src/subscription/node-name-filter.ts | Implemented core | Bounded linear-time Rust regex, persisted settings; origin-name semantics differ for renamed nodes |
 | Protocol URI parsing | packages/core/src/parser/protocols/* | Partial | SS/VMess/VLESS/Trojan/Hysteria2/TUIC/AnyTLS/SSR/WireGuard; advanced options, Hysteria v1, Snell, Loon, QX, Surge, Netch not complete |
 | Clash YAML proxy import | packages/core/src/parser/clash-yaml.ts | Partial | Preserves proxy entries, strips remote dialer control; alternate Clash field formats incomplete |
-| Built-in region and services groups | packages/core/src/generator/proxy-group-modules.ts | Missing | Need full config type/policy module port and cross-output fixtures |
+| Built-in region and services groups | packages/core/src/generator/proxy-group-modules.ts | Partial | 36 upstream modules and 94 MRS rules now embedded and opt-in; advanced per-module settings, rule edits and semantics still need cross-output fixtures |
 | Custom proxy group graph | packages/core/src/generator/proxy-groups.ts | Partial | Manual YAML custom groups preserved; automatic region filter, module, health-check and reference validation not equivalent |
 | Dialer chain and relays | packages/core/src/generator/chain.ts | Missing native UI/generator | Advanced manual YAML may work, not full editing semantics |
 | Rule order and builtin rule edits | packages/core/src/generator/rules.ts | Partial | Manual ordered rule lines; full rule module editing and rule-source support pending |

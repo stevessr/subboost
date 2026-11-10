@@ -1,7 +1,7 @@
 'use strict';
 const el = (id) => document.getElementById(id);
 let admin = sessionStorage.getItem('subboost-rs-admin') || '';
-let profiles = [], current = null, savedTemplates = [];
+let profiles = [], current = null, savedTemplates = [], policyModules = [];
 function notice(message, bad = false) {
   const box = el('notice');
   box.textContent = String(message);
@@ -37,6 +37,9 @@ function blank() {
   el('node-filter-enabled').checked=false;
   el('node-filter-includes').value='';el('node-filter-excludes').value='';
   el('save-node-filter').disabled=true;
+  el('modules-select').disabled=true;
+  el('save-modules').disabled=true;
+  for(const opt of el('modules-select').options)opt.selected=false;
   el('refresh-status').textContent='保存配置后可设置自动刷新。';
   renderList();
 }
@@ -53,6 +56,9 @@ function show(profile) {
   el('save-node-filter').disabled=false;
   updateSchedule(profile.id);
   updateNodeFilter(profile.id);
+  el('modules-select').disabled=false;
+  el('save-modules').disabled=false;
+  updateProfileModules(profile.id);
   el('rs-url').textContent=link(profile,'clash-rs');
   el('mihomo-url').textContent=link(profile,'mihomo');
   renderList();
@@ -107,9 +113,17 @@ async function reloadTemplates() {
   if(savedTemplates.some(t=>t.id===previous))selector.value=previous;
 }
 async function reload(id) {
-  [profiles, savedTemplates] = await Promise.all([
-    api('/api/subscriptions'),api('/api/templates')
+  [profiles, savedTemplates, policyModules] = await Promise.all([
+    api('/api/subscriptions'),api('/api/templates'),api('/api/modules')
   ]);
+  const modulesSelect=el('modules-select');
+  modulesSelect.replaceChildren();
+  for(const module of policyModules){
+    const option=document.createElement('option');
+    option.value=module.id;
+    option.textContent=module.name+' ('+module.category+', '+module.rules.length+' 规则)';
+    modulesSelect.append(option);
+  }
   const selector=el('template-select'), previous=selector.value;
   selector.replaceChildren();
   const empty=document.createElement('option');
@@ -131,6 +145,41 @@ el('login-form').addEventListener('submit',async(e)=>{
 });
 el('logout').addEventListener('click',()=>{
   sessionStorage.removeItem('subboost-rs-admin');admin='';profiles=[];blank();activate();
+});
+const DEFAULT_MODULE_PRESETS={
+  minimal:['select','auto','ad','private','cn','global','final'],
+  standard:['select','auto','ad','private','cn','global','ai','youtube',
+    'google','microsoft','apple','github','telegram','final']
+};
+async function updateProfileModules(id){
+  try{
+    const ids=await api('/api/subscriptions/'+id+'/modules');
+    if(!current||current.id!==id)return;
+    const active=new Set(ids);
+    for(const option of el('modules-select').options){
+      option.selected=active.has(option.value);
+    }
+  }catch(err){notice(err.message,true);}
+}
+el('apply-module-preset').addEventListener('click',()=>{
+  const preset=el('module-preset').value;
+  let ids=DEFAULT_MODULE_PRESETS[preset];
+  if(preset==='full')ids=policyModules.filter(m=>
+    !['adult','gemini','google-scholar'].includes(m.id)).map(m=>m.id);
+  if(!ids){notice('请先选择一个预设',true);return;}
+  const active=new Set(ids);
+  for(const option of el('modules-select').options)option.selected=active.has(option.value);
+  notice('已选择 '+ids.length+' 个策略组，请点击保存模块配置');
+});
+el('save-modules').addEventListener('click',async()=>{
+  if(!current)return;
+  const ids=Array.from(el('modules-select').selectedOptions).map(o=>o.value);
+  try{
+    await api('/api/subscriptions/'+current.id+'/modules',{
+      method:'PUT',body:JSON.stringify({enabled:ids})
+    });
+    notice('已保存 '+ids.length+' 个策略组和相应规则。下次订阅更新自动生效。');
+  }catch(err){notice(err.message,true);}
 });
 async function updateNodeFilter(id){
   try{
