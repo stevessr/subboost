@@ -32,11 +32,19 @@ fn node(value: serde_json::Value) -> Result<Value, String> {
 }
 
 fn parse_ss(raw: &str) -> Result<Value, String> {
-    let url = Url::parse(raw).map_err(|e| e.to_string())?;
+    // A completely base64-encoded SS URI has no parseable host until
+    // credentials and endpoint have been decoded.
+    let encoded = raw.trim_start_matches("ss://").split(['#','?']).next().unwrap_or("");
+    let fully_encoded = !encoded.contains('@');
+    let url = if fully_encoded {
+        Url::parse("ss://placeholder.example:8388").map_err(|e| e.to_string())?
+    } else {
+        Url::parse(raw).map_err(|e| e.to_string())?
+    };
     // Some subscriptions use ss://BASE64(method:password@host:port) with no
     // explicit @ in the outer URL. Url::parse may mistake it for a hostname.
     let outer_auth = raw.trim_start_matches("ss://").split(['#','?']).next().unwrap_or("");
-    let (userinfo, server, port) = if !outer_auth.contains('@') || url.host_str().is_none() {
+    let (userinfo, server, port) = if fully_encoded || url.host_str().is_none() {
         let encoded = raw.trim_start_matches("ss://").split(['#','?']).next().unwrap_or("");
         let decoded = decode_base64(encoded).ok_or("Invalid Shadowsocks base64")?;
         let inner = String::from_utf8(decoded).map_err(|_| "Invalid Shadowsocks UTF-8")?;
@@ -55,8 +63,12 @@ fn parse_ss(raw: &str) -> Result<Value, String> {
     };
     let (cipher, password) = userinfo.split_once(':').ok_or("Missing Shadowsocks cipher/password")?;
     if cipher.is_empty() || password.is_empty() { return Err("Empty Shadowsocks credentials".into()); }
+    let name = if fully_encoded {
+        raw.split_once('#').map(|(_,n)| n.to_owned()).filter(|n| !n.is_empty())
+            .unwrap_or_else(|| server.clone())
+    } else { fragment_name(&url, &server) };
     node(serde_json::json!({
-        "name": fragment_name(&url, &server), "type": "ss",
+        "name": name, "type": "ss",
         "server": server, "port": port, "cipher": cipher, "password": password,
     }))
 }
@@ -211,6 +223,14 @@ mod tests {
         let content = STANDARD.encode(format!("{uri}\n"));
         assert_eq!(parse_document(&content).unwrap()[0]["name"].as_str(),Some("Hello"));
     }
+    #[test]
+    fn parses_fully_base64_encoded_shadowsocks_link() {
+        let encoded = STANDARD.encode("aes-128-gcm:password@example.net:8388");
+        let node = parse_uri(&format!("ss://{encoded}#Encoded")).unwrap();
+        assert_eq!(node["name"].as_str(), Some("Encoded"));
+        assert_eq!(node["server"].as_str(), Some("example.net"));
+    }
+
     #[test]
     fn rejects_invalid_nodes_and_source_schemes() {
         assert!(parse_document("proxies:\n  - {name: A, type: ss, server: example.org, port: 0}").is_err());

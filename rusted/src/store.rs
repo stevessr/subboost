@@ -118,7 +118,10 @@ pub fn create(db: &Connection, input: SubscriptionInput) -> rusqlite::Result<Sub
 pub fn update(db: &Connection, id: &str, input: SubscriptionInput) -> rusqlite::Result<bool> {
     Ok(db.execute(
         "UPDATE subscriptions SET name=?2, sources_json=?3, manual_yaml=?4,
-             rules_text=?5, nodes_yaml='', last_error='', updated_at=?6 WHERE id=?1",
+             rules_text=?5,
+             nodes_yaml=CASE WHEN sources_json=?3 THEN nodes_yaml ELSE '' END,
+             last_error=CASE WHEN sources_json=?3 THEN last_error ELSE '' END,
+             updated_at=?6 WHERE id=?1",
         params![id, input.name, serde_json::to_string(&input.source_urls).unwrap(),
                 input.manual_yaml, input.rules_text, now()],
     )? != 0)
@@ -151,6 +154,17 @@ mod tests {
         }).unwrap();
         assert_eq!(list(&db).unwrap().len(), 1);
         assert!(by_token(&db, &sub.token).unwrap().is_some());
+        save_refresh(&db, &sub.id, "proxies: []", "").unwrap();
+        update(&db, &sub.id, SubscriptionInput {
+            name: "Edit".into(), source_urls: sub.source_urls.clone(),
+            manual_yaml: "".into(), rules_text: "MATCH,Proxy".into(),
+        }).unwrap();
+        assert!(by_id(&db, &sub.id).unwrap().unwrap().nodes_yaml.contains("proxies"));
+        update(&db, &sub.id, SubscriptionInput {
+            name: "Edit".into(), source_urls: vec!["https://new.example/sub".into()],
+            manual_yaml: "".into(), rules_text: "".into(),
+        }).unwrap();
+        assert_eq!(by_id(&db, &sub.id).unwrap().unwrap().nodes_yaml, "");
         save_refresh(&db, &sub.id, "proxies: []", "").unwrap();
         assert!(by_id(&db, &sub.id).unwrap().unwrap().nodes_yaml.contains("proxies"));
         rotate(&db, &sub.id).unwrap();
