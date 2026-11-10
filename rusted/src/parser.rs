@@ -38,6 +38,61 @@ fn node(value: serde_json::Value) -> Result<Value, String> {
     serde_yaml::to_value(value).map_err(|e| e.to_string())
 }
 
+/// Parse SIP002 plugin segments. Backslash only unescapes semicolon,
+/// equals or backslash; all other escapes are preserved like upstream.
+fn ss_plugin_segments(value: &str) -> Vec<String> {
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    let mut chars = value.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.peek().copied() {
+                Some(';' | '=' | '\\') => { current.push(chars.next().unwrap()); }
+                _ => current.push('\\'),
+            },
+            ';' => { segments.push(std::mem::take(&mut current)); },
+            _ => current.push(c),
+        }
+    }
+    segments.push(current);
+    segments
+}
+
+fn ss_plugin_opts(url: &Url, proxy: &mut serde_json::Value) {
+    let Some(plugin) = url.query_pairs().find(|(k, _)| k == "plugin")
+        .map(|(_,v)|v.into_owned()) else { return; };
+    let mut segments = ss_plugin_segments(&plugin).into_iter();
+    let Some(raw_name) = segments.next() else { return; };
+    let raw_name = raw_name.trim();
+    if raw_name.is_empty() { return; }
+    let name = raw_name.to_ascii_lowercase();
+    let is_obfs = matches!(name.as_str(), "obfs" | "obfs-local" | "simple-obfs");
+    let mut opts = serde_json::Map::new();
+    for segment in segments {
+        let segment = segment.trim();
+        if segment.is_empty() { continue; }
+        let (key, value) = match segment.split_once('=') {
+            Some((key, value)) => (key.trim(), serde_json::json!(if value.trim().is_empty() { "true" } else { value.trim() })),
+            None => (segment, serde_json::json!(true)),
+        };
+        if !key.is_empty() { opts.insert(key.to_owned(), value); }
+    }
+    if is_obfs {
+        let mode = opts.get("mode").or_else(|| opts.get("obfs"))
+            .and_then(serde_json::Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned);
+        let host = opts.get("host").or_else(|| opts.get("obfs-host"))
+            .or_else(|| opts.get("obfs_host"))
+            .and_then(serde_json::Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned);
+        opts.clear();
+        if let Some(mode) = mode { opts.insert("mode".into(), serde_json::json!(mode)); }
+        if let Some(host) = host { opts.insert("host".into(), serde_json::json!(host)); }
+        proxy["plugin"] = serde_json::json!("obfs");
+    } else {
+        proxy["plugin"] = serde_json::json!(raw_name);
+    }
+    if !opts.is_empty() { proxy["plugin-opts"] = serde_json::Value::Object(opts); }
+}
+
 fn parse_ss(raw: &str) -> Result<Value, String> {
     // Match the upstream SIP002 and legacy base64 encodings. Splitting at the
     // last '@' preserves ':' characters in plaintext credentials/passwords.
@@ -76,10 +131,19 @@ fn parse_ss(raw: &str) -> Result<Value, String> {
         (!fragment.is_empty()).then(|| percent_encoding::percent_decode_str(fragment)
             .decode_utf8_lossy().into_owned())
     }).unwrap_or_else(|| server.clone());
-    node(serde_json::json!({
+    let mut proxy = serde_json::json!({
         "name": name, "type": "ss", "server": server, "port": port,
         "cipher": cipher, "password": password, "udp": true,
-    }))
+    });
+    if let Ok(url) = Url::parse(raw) {
+        ss_plugin_opts(&url, &mut proxy);
+        for (query, field) in [("uot", "udp-over-tcp"), ("tfo", "tfo")] {
+            if query_bool(&url, query) {
+                proxy[field] = serde_json::json!(true);
+            }
+        }
+    }
+    node(proxy)
 }
 
 fn query_param(url: &Url, key: &str) -> Option<String> {
@@ -382,6 +446,15 @@ mod tests {
         let uri = "trojan://secret@example.org:443?sni=example.org#Hello";
         let content = STANDARD.encode(format!("{uri}\n"));
         assert_eq!(parse_document(&content).unwrap()[0]["name"].as_str(),Some("Hello"));
+    }
+    #[test]
+    fn normalizes_sip002_obfs_plugin_and_flags() {
+        let parsed = parse_uri("ss://aes-128-gcm:pass@example.org:443?plugin=obfs-local%3Bobfs%3Dtls%3Bobfs-host%3Dcdn.example.org&uot=1&tfo=yes#SS").unwrap();
+        assert_eq!(parsed["plugin"].as_str(), Some("obfs"));
+        assert_eq!(parsed["plugin-opts"]["mode"].as_str(), Some("tls"));
+        assert_eq!(parsed["plugin-opts"]["host"].as_str(), Some("cdn.example.org"));
+        assert_eq!(parsed["udp-over-tcp"].as_bool(), Some(true));
+        assert_eq!(parsed["tfo"].as_bool(), Some(true));
     }
     #[test]
     fn parses_plaintext_and_encoded_sip002_shadowsocks_credentials() {
