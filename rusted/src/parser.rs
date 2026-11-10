@@ -33,7 +33,10 @@ fn node(value: serde_json::Value) -> Result<Value, String> {
 
 fn parse_ss(raw: &str) -> Result<Value, String> {
     let url = Url::parse(raw).map_err(|e| e.to_string())?;
-    let (userinfo, server, port) = if url.host_str().is_none() {
+    // Some subscriptions use ss://BASE64(method:password@host:port) with no
+    // explicit @ in the outer URL. Url::parse may mistake it for a hostname.
+    let outer_auth = raw.trim_start_matches("ss://").split(['#','?']).next().unwrap_or("");
+    let (userinfo, server, port) = if !outer_auth.contains('@') || url.host_str().is_none() {
         let encoded = raw.trim_start_matches("ss://").split(['#','?']).next().unwrap_or("");
         let decoded = decode_base64(encoded).ok_or("Invalid Shadowsocks base64")?;
         let inner = String::from_utf8(decoded).map_err(|_| "Invalid Shadowsocks UTF-8")?;
