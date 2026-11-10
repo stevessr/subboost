@@ -428,6 +428,47 @@ async fn templates_delete(AppState(state): AppState<State>,headers: HeaderMap,
     Ok(Json(json!({"deleted":true})))
 }
 
+
+#[derive(Deserialize)]
+struct RuleCatalogQuery {
+    q:Option<String>,
+    limit:Option<usize>,
+}
+
+async fn module_rules_search(
+    AppState(state):AppState<State>, headers:HeaderMap, Query(query):Query<RuleCatalogQuery>
+) -> ApiResult<JsonValue> {
+    authorized(&state,&headers)?;
+    let keyword=query.q.unwrap_or_default().trim().to_lowercase();
+    if keyword.chars().count()>128 {
+        return Err(bad("Rule search keyword too long (max 128 characters)"));
+    }
+    let limit=query.limit.unwrap_or(20).clamp(1,50);
+    let mut items=Vec::new();
+    let mut matched=0usize;
+    for module in modules::all() {
+        for rule in &module.rules {
+            if !keyword.is_empty() && ![
+                module.id.as_str(),module.name.as_str(),rule.id.as_str(),
+                rule.name.as_str(),rule.path.as_str(),rule.behavior.as_str()
+            ].iter().any(|field|field.to_lowercase().contains(&keyword)){
+                continue;
+            }
+            matched+=1;
+            if items.len()<limit {
+                items.push(json!({
+                    "module_id":module.id,"module_name":module.name,
+                    "rule_id":rule.id,"rule_name":rule.name,
+                    "behavior":rule.behavior,"path":rule.path,
+                    "no_resolve":rule.no_resolve
+                }));
+            }
+        }
+    }
+    Ok(Json(json!({"items":items,"total_matched":matched,
+        "total_rules":modules::all().iter().map(|m|m.rules.len()).sum::<usize>()})))
+}
+
 async fn modules_catalog(AppState(state):AppState<State>,headers:HeaderMap)
     -> ApiResult<Vec<modules::Module>>{
     authorized(&state,&headers)?;
@@ -504,6 +545,7 @@ pub fn router(state: State) -> Router {
         .route("/style.css",get(css))
         .route("/api/health/live",get(health))
         .route("/api/modules",get(modules_catalog))
+        .route("/api/module-rules/search",get(module_rules_search))
         .route("/api/subscriptions/{id}/modules",
             get(profile_modules_get).put(profile_modules_set))
         .route("/api/templates",get(templates_list).post(templates_create))
@@ -537,6 +579,33 @@ mod tests {
         for ip in ["1.1.1.1","8.8.8.8","2606:4700:4700::1111"] {
             assert!(public_ip(ip.parse().unwrap()),"{ip}");
         }
+    }
+    #[tokio::test]
+    async fn rule_catalog_search_is_authenticated_and_bounded() {
+        let db=store::open(std::path::Path::new(":memory:")).unwrap();
+        let app=router(State {
+            db:std::sync::Arc::new(std::sync::Mutex::new(db)),
+            admin_token:std::sync::Arc::new("x".repeat(43)),
+            client:reqwest::Client::new(),
+        });
+        let path="/api/module-rules/search?q=geosite&limit=3";
+        let denied=app.clone().oneshot(Request::builder().uri(path)
+            .body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(denied.status(),StatusCode::UNAUTHORIZED);
+        let response=app.clone().oneshot(Request::builder().uri(path)
+            .header("Authorization",format!("Bearer {}","x".repeat(43)))
+            .body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(),StatusCode::OK);
+        let bytes=axum::body::to_bytes(response.into_body(),64*1024).await.unwrap();
+        let body:JsonValue=serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["items"].as_array().unwrap().len(),3);
+        assert!(body["total_matched"].as_u64().unwrap()>=3);
+        assert_eq!(body["total_rules"].as_u64(),Some(94));
+        let invalid=app.oneshot(Request::builder().uri(
+            format!("/api/module-rules/search?q={}", "a".repeat(129)))
+            .header("Authorization",format!("Bearer {}","x".repeat(43)))
+            .body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(invalid.status(),StatusCode::BAD_REQUEST);
     }
     #[tokio::test]
     async fn authenticated_crud_and_public_export() {
