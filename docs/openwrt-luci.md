@@ -124,3 +124,25 @@ rm -rf /tmp/luci-modulecache/
 Log out and back in to LuCI, or use a new private window to refresh
 session-scoped access groups. The separate **Nikki RS > SubBoost** page
 belongs to the Nikki RS LuCI package and works independently.
+
+## Local SubBoost (OpenWrt 25.12/SNAPSHOT APK)
+
+The new full `subboost-server` package runs the **actual Next.js
+application**, not just the LuCI link-management interface. On supported
+OpenWrt x86_64 and aarch64 devices it includes an architecture-specific
+Node.js 24 musl runtime and a standalone copy of the upstream server.
+The separate `pgsql-server` and `pgsql-cli` OpenWrt packages provide
+the PostgreSQL database. The server listens on port 3000, and the LuCI
+page defaults to `http://<current router hostname>:3000`.
+
+The full application is substantially heavier than LuCI-only operation;
+ensure there is sufficient persistent storage and available memory.
+The release includes a source revision for traceability and publishes
+actual APKs only for the supported CPU architectures. Other OpenWrt
+architectures keep the smaller `luci-app-subboost` frontend.
+
+**Menu caching:** If the direct SubBoost URL works but the Services menu
+does not show it, click **Refresh LuCI services menu** within the
+SubBoost page. This explicitly invalidates the browser's cached LuCI
+menu and reloads it. Server-side rpcd and index cache cleanup alone
+cannot clear that browser session cache.

@@ -1,0 +1,20 @@
+#!/bin/sh
+case "$1" in
+    token)
+        if [ "$(id -u)" != 0 ]; then
+            echo "Run as root in router SSH" >&2
+            exit 1
+        fi
+        if [ -s /etc/subboost-rs/admin.token ]; then
+            cat /etc/subboost-rs/admin.token
+        else
+            echo "Token not initialized; start /etc/init.d/subboost-rs" >&2
+            exit 1
+        fi
+        ;;
+    status|start|stop|restart) exec /etc/init.d/subboost-rs "$1" ;;
+    *)
+        echo 'Usage: subboost-rsctl {token|status|start|stop|restart}' >&2
+        exit 2
+        ;;
+esac

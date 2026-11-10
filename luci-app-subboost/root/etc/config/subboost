@@ -1,4 +1,3 @@
 config settings 'main'
-	option base_url 'https://subboost.org'
-
-# Add generated subscriptions through Services > SubBoost.
+	# Local SubBoost listens on port 3000 when subboost-server is installed.
+	# No base_url here: LuCI discovers the router hostname dynamically.
