@@ -216,6 +216,9 @@ fn parse_vless(raw: &str) -> Result<Value, String> {
     }
     transport_options(&url, &mut proxy, &network)?;
     if security == "reality" {
+        if proxy.get("client-fingerprint").is_none() {
+            proxy["client-fingerprint"] = serde_json::json!("chrome");
+        }
         let public_key = query_param(&url, "pbk").filter(|s| !s.is_empty())
             .ok_or("Reality public key required")?;
         proxy["reality-opts"] = serde_json::json!({
@@ -340,7 +343,7 @@ mod tests {
             let uri = fixture["uri"].as_str().unwrap();
             let node = parse_uri(uri).unwrap_or_else(|err| panic!("{}: {err}", fixture["id"]));
             let mut actual = serde_json::Map::new();
-            for key in ["name", "type", "server", "port", "network", "cipher", "password", "udp", "sni"] {
+            for key in ["name", "type", "server", "port", "network", "cipher", "password", "udp", "sni", "client-fingerprint"] {
                 if let Some(value) = node.get(key) {
                     actual.insert(key.into(), serde_json::to_value(value).unwrap());
                 }
