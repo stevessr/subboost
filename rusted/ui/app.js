@@ -171,6 +171,53 @@ el('apply-module-preset').addEventListener('click',()=>{
   for(const option of el('modules-select').options)option.selected=active.has(option.value);
   notice('已选择 '+ids.length+' 个策略组，请点击保存模块配置');
 });
+
+let latestRuleSearch=0;
+let ruleSearchTimer;
+async function searchModuleRules() {
+  const seq=++latestRuleSearch;
+  const query=el('rule-query').value.trim();
+  const panel=el('rule-results');
+  if(!admin || !query){panel.replaceChildren();return;}
+  try {
+    const result=await api('/api/module-rules/search?q='+encodeURIComponent(query)+'&limit=30');
+    if(seq!==latestRuleSearch)return;
+    panel.replaceChildren();
+    if(!result.items.length){
+      const empty=document.createElement('p');empty.className='muted smallprint';
+      empty.textContent='没有匹配的内置规则';panel.append(empty);return;
+    }
+    for(const rule of result.items) {
+      const button=document.createElement('button');button.type='button';
+      button.className='secondary small rule-result';
+      const name=document.createElement('strong');
+      name.textContent=rule.module_name+' · '+rule.rule_name;
+      const detail=document.createElement('small');
+      detail.textContent=rule.rule_id+' · '+rule.behavior+' · '+rule.path;
+      button.append(name,detail);
+      button.addEventListener('click',()=>{
+        const modules=el('modules-select');
+        const option=Array.from(modules.options).find(x=>x.value===rule.module_id);
+        if(!option)return;
+        option.selected=true;
+        notice('已选择「'+rule.module_name+'」，请保存模块配置');
+      });
+      panel.append(button);
+    }
+    if(result.total_matched>result.items.length){
+      const extra=document.createElement('p');
+      extra.className='muted smallprint';
+      extra.textContent='另有 '+(result.total_matched-result.items.length)+' 条结果，请缩小关键词';
+      panel.append(extra);
+    }
+  }catch(err){
+    if(seq===latestRuleSearch){panel.replaceChildren();notice(err.message,true);}
+  }
+}
+el('rule-query').addEventListener('input',()=>{
+  clearTimeout(ruleSearchTimer);
+  ruleSearchTimer=setTimeout(searchModuleRules,200);
+});
 el('save-modules').addEventListener('click',async()=>{
   if(!current)return;
   const ids=Array.from(el('modules-select').selectedOptions).map(o=>o.value);
