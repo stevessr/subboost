@@ -279,7 +279,9 @@ fn parse_trojan(raw: &str) -> Result<Value, String> {
     if password.is_empty() { return Err("Missing Trojan password".into()); }
     let network = query_param(&url, "type").unwrap_or_else(|| {
         if query_bool(&url, "ws") { "ws" } else { "tcp" }.into()
-    });
+    }).to_ascii_lowercase();
+    let upgrade=network=="httpupgrade";
+    let network=if upgrade { "ws".to_owned() } else { network };
     let mut proxy = serde_json::json!({
         "name": fragment_name(&url, &server), "type": "trojan", "server": server,
         "port": port, "password": password, "udp": true, "sni": server,
@@ -290,6 +292,10 @@ fn parse_trojan(raw: &str) -> Result<Value, String> {
     }
     tls_options(&url, &mut proxy);
     transport_options(&url, &mut proxy, &network)?;
+    if upgrade {
+        proxy["ws-opts"]["v2ray-http-upgrade"]=serde_json::json!(true);
+        proxy["ws-opts"]["v2ray-http-upgrade-fast-open"]=serde_json::json!(true);
+    }
     node(proxy)
 }
 fn vless_uri(raw: &str) -> Result<(Url,bool),String> {
@@ -467,7 +473,8 @@ fn parse_vmess_config(settings: &serde_json::Value) -> Result<Value, String> {
                 opts["v2ray-http-upgrade"] = serde_json::json!(true);
                 opts["v2ray-http-upgrade-fast-open"] = serde_json::json!(true);
             }
-            if path != "/" || opts.get("headers").is_some() || early_data.is_some() {
+            if path != "/" || opts.get("headers").is_some() || early_data.is_some()
+                || json_string(settings,"net")==Some("httpupgrade") {
                 proxy["ws-opts"] = opts;
             }
         },
