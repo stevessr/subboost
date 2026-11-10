@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import fixtures from "../../../../../rusted/data/uri-parity-fixtures.json";
+import ruleFixtures from "../../../../../rusted/data/rule-parity-fixtures.json";
+import { generateRules } from "../../generator/rules";
 import { parseTrojan } from "./trojan";
 import { parseSS } from "./ss";
 import { parseVMess } from "./vmess";
@@ -51,6 +53,18 @@ describe("upstream URI parity contract shared with Rust", () => {
         Object.keys(expected).map((key) => [key, actual[key]])
       );
       expect(selected).toEqual(expected);
+    });
+  }
+});
+
+describe("upstream rule-order contract shared with Rust", () => {
+  for (const fixture of ruleFixtures) {
+    it(fixture.id, () => {
+      const actual = generateRules({
+        enabledModules: fixture.enabled_modules,
+        customRules: [],
+      });
+      expect(actual).toEqual(fixture.expected_rules);
     });
   }
 });
