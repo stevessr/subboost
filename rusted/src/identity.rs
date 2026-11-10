@@ -46,6 +46,19 @@ pub fn scoped_key(scope:&str,node:&Value)->String {
 mod tests {
     use super::*;
     #[test]
+    fn shared_upstream_node_identity_contract() {
+        let fixtures:Value=serde_json::from_str(
+            include_str!("../data/node-identity-fixtures.json")).unwrap();
+        for fixture in fixtures.as_array().unwrap() {
+            let node=&fixture["node"];
+            let opts:NodeContentKeyOptions=serde_json::from_value(
+                fixture["opts"].clone()).unwrap();
+            let actual=content_key(node,opts);
+            assert_eq!(actual,fixture["expected"].as_str().unwrap(),
+                "Node identity mismatch: {}",fixture["id"]);
+        }
+    }
+    #[test]
     fn name_and_internal_metadata_do_not_change_identity() {
         let first=serde_json::json!({
             "type":"vless","name":"Before","server":"edge.example.org",
