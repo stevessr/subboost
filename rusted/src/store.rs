@@ -139,15 +139,28 @@ pub fn create(db: &Connection, input: SubscriptionInput) -> rusqlite::Result<Sub
 }
 
 pub fn update(db: &Connection, id: &str, input: SubscriptionInput) -> rusqlite::Result<bool> {
-    Ok(db.execute(
+    let sources_json=serde_json::to_string(&input.source_urls)
+        .map_err(|e|rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+    let tx=db.unchecked_transaction()?;
+    let previous:Option<String>=tx.query_row(
+        "SELECT sources_json FROM subscriptions WHERE id=?1",params![id],|r|r.get(0)
+    ).optional()?;
+    let Some(previous)=previous else {tx.rollback()?;return Ok(false);};
+    let changed=tx.execute(
         "UPDATE subscriptions SET name=?2, sources_json=?3, manual_yaml=?4,
              rules_text=?5,
              nodes_yaml=CASE WHEN sources_json=?3 THEN nodes_yaml ELSE '' END,
              last_error=CASE WHEN sources_json=?3 THEN last_error ELSE '' END,
              updated_at=?6, revision=revision+1 WHERE id=?1",
-        params![id, input.name, serde_json::to_string(&input.source_urls).unwrap(),
+        params![id, input.name, sources_json,
                 input.manual_yaml, input.rules_text, now()],
-    )? != 0)
+    )?!=0;
+    if changed && previous!=sources_json {
+        // Removed or replaced URLs must not leave stale node caches behind.
+        tx.execute("DELETE FROM subscription_source_cache WHERE subscription_id=?1",params![id])?;
+    }
+    tx.commit()?;
+    Ok(changed)
 }
 
 pub fn save_refresh(db: &Connection, id: &str, nodes_yaml: &str, error: &str) -> rusqlite::Result<()> {
@@ -267,7 +280,14 @@ mod tests {
             manual_yaml:"dns:\n  enable: false".into(),rules_text:"MATCH,DIRECT".into()
         }).unwrap();
         assert!(!save_refresh_if_revision(&db,&sub.id,before_edit.revision,"- {name: Race}", "").unwrap());
-        assert!(by_id(&db,&sub.id).unwrap().unwrap().nodes_yaml.contains("Fresh"));
+        assert!(by_id(&db,&sub.id).unwrap().unwrap().nodes_yaml.contains("Live"));
+        assert!(source_nodes(&db,&sub.id,&cached_url).unwrap().is_some());
+        let latest=by_id(&db,&sub.id).unwrap().unwrap();
+        update(&db,&sub.id,SubscriptionInput {
+            name:"New source".into(),source_urls:vec!["https://another.example/sub".into()],
+            manual_yaml:latest.manual_yaml.clone(),rules_text:latest.rules_text.clone(),
+        }).unwrap();
+        assert!(source_nodes(&db,&sub.id,&cached_url).unwrap().is_none());
         rotate(&db, &sub.id).unwrap();
         assert!(by_token(&db, &sub.token).unwrap().is_none());
         assert!(delete(&db, &sub.id).unwrap());
