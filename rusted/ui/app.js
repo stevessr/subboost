@@ -1,7 +1,7 @@
 'use strict';
 const el = (id) => document.getElementById(id);
 let admin = sessionStorage.getItem('subboost-rs-admin') || '';
-let profiles = [], current = null;
+let profiles = [], current = null, savedTemplates = [];
 function notice(message, bad = false) {
   const box = el('notice');
   box.textContent = String(message);
@@ -63,8 +63,36 @@ function renderList() {
   if(!profiles.length){const p=document.createElement('p');p.className='muted';
     p.textContent='暂无配置，点击「新建」开始。';panel.append(p);}
 }
+async function reloadTemplates() {
+  savedTemplates = await api('/api/templates');
+  const selector = el('template-select');
+  const previous = selector.value;
+  selector.replaceChildren();
+  const empty = document.createElement('option');
+  empty.value='';empty.textContent='请选择预设或已保存模板';selector.append(empty);
+  for(const t of savedTemplates) {
+    const option = document.createElement('option');
+    option.value=t.id;
+    option.textContent=t.name+(t.built_in?' · 内置':' · 自定义');
+    selector.append(option);
+  }
+  if(savedTemplates.some(t=>t.id===previous))selector.value=previous;
+}
 async function reload(id) {
-  profiles=await api('/api/subscriptions');
+  [profiles, savedTemplates] = await Promise.all([
+    api('/api/subscriptions'),api('/api/templates')
+  ]);
+  const selector=el('template-select'), previous=selector.value;
+  selector.replaceChildren();
+  const empty=document.createElement('option');
+  empty.value='';empty.textContent='请选择预设或已保存模板';
+  selector.append(empty);
+  savedTemplates.forEach(t=>{
+    const option=document.createElement('option');
+    option.value=t.id;option.textContent=t.name+(t.built_in?' · 内置':' · 自定义');
+    selector.append(option);
+  });
+  if(savedTemplates.some(t=>t.id===previous))selector.value=previous;
   const next=profiles.find((p)=>p.id===(id||(current&&current.id)));
   if(next)show(next);else blank();
 }
@@ -77,6 +105,39 @@ el('logout').addEventListener('click',()=>{
   sessionStorage.removeItem('subboost-rs-admin');admin='';profiles=[];blank();activate();
 });
 el('new').addEventListener('click',blank);
+el('apply-template').addEventListener('click',()=>{
+  const value=savedTemplates.find(t=>t.id===el('template-select').value);
+  if(!value){notice('请先选择模板',true);return;}
+  if((el('manual').value.trim()||el('rules').value.trim()) &&
+    !confirm('应用模板会覆盖当前配置的 YAML 与规则文本。继续吗？'))return;
+  el('manual').value=value.manual_yaml;
+  el('rules').value=value.rules_text;
+  notice('已应用 '+value.name+'，请保存配置');
+});
+el('save-template').addEventListener('click',async()=>{
+  const name=prompt('模板名称：',el('name').value.trim()||'自定义配置');
+  if(name===null)return;
+  try{
+    const item=await api('/api/templates',{method:'POST',body:JSON.stringify({
+      name:name.trim(),description:'保存于本地 SubBoost RS',
+      manual_yaml:el('manual').value,rules_text:el('rules').value
+    })});
+    await reloadTemplates();
+    el('template-select').value=item.id;
+    notice('模板已保存到本机 SQLite');
+  }catch(err){notice(err.message,true);}
+});
+el('delete-template').addEventListener('click',async()=>{
+  const selected=savedTemplates.find(t=>t.id===el('template-select').value);
+  if(!selected||selected.built_in){notice('请选择可删除的自定义模板',true);return;}
+  if(!confirm('确定删除模板「'+selected.name+'」吗？'))return;
+  try{
+    await api('/api/templates/'+selected.id,{method:'DELETE'});
+    await reloadTemplates();
+    notice('模板已删除');
+  }catch(err){notice(err.message,true);}
+});
+
 el('edit').addEventListener('submit',async(e)=>{
   e.preventDefault();
   const body={name:el('name').value.trim(),

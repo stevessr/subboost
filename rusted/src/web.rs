@@ -1,4 +1,4 @@
-use crate::{config, parser, store, State};
+use crate::{config, parser, store, templates, State};
 use axum::{
     body::Body,
     extract::{Path, Query, State as AppState},
@@ -194,12 +194,68 @@ async fn export(AppState(state): AppState<State>,
     }
 }
 
+fn validate_template(input: &templates::TemplateInput) -> Result<(), ApiError> {
+    if input.name.trim().is_empty() || input.name.len()>128 ||
+        input.description.len()>512 || input.manual_yaml.len()>512*1024 ||
+        input.rules_text.len()>128*1024 {
+        return Err(bad("Template name must be 1-128 characters and body within limits"));
+    }
+    if !input.manual_yaml.trim().is_empty() {
+        let doc: serde_yaml::Value=serde_yaml::from_str(&input.manual_yaml)
+            .map_err(|e|bad(format!("Invalid template YAML: {e}")))?;
+        if doc.as_mapping().is_none() { return Err(bad("Template YAML must be a mapping")); }
+    }
+    Ok(())
+}
+
+async fn templates_list(AppState(state): AppState<State>,headers: HeaderMap)
+    -> ApiResult<Vec<templates::Template>> {
+    authorized(&state,&headers)?;
+    let db=lock(&state)?;
+    Ok(Json(sql(templates::list(&db))?))
+}
+async fn templates_get(AppState(state): AppState<State>,headers: HeaderMap,Path(id):Path<String>)
+    -> ApiResult<templates::Template> {
+    authorized(&state,&headers)?;
+    let db=lock(&state)?;
+    sql(templates::get(&db,&id))?.map(Json)
+        .ok_or_else(||error(StatusCode::NOT_FOUND,"Template not found"))
+}
+async fn templates_create(AppState(state): AppState<State>,headers: HeaderMap,
+    Json(input):Json<templates::TemplateInput>) -> ApiResult<templates::Template> {
+    authorized(&state,&headers)?;
+    validate_template(&input)?;
+    let db=lock(&state)?;
+    Ok(Json(sql(templates::create(&db,input))?))
+}
+async fn templates_update(AppState(state): AppState<State>,headers: HeaderMap,
+    Path(id):Path<String>,Json(input):Json<templates::TemplateInput>)
+    -> ApiResult<templates::Template> {
+    authorized(&state,&headers)?;
+    validate_template(&input)?;
+    let db=lock(&state)?;
+    sql(templates::update(&db,&id,input))?.map(Json)
+        .ok_or_else(||error(StatusCode::NOT_FOUND,"Template not found or built-in"))
+}
+async fn templates_delete(AppState(state): AppState<State>,headers: HeaderMap,
+    Path(id):Path<String>) -> ApiResult<JsonValue> {
+    authorized(&state,&headers)?;
+    let db=lock(&state)?;
+    if !sql(templates::delete(&db,&id))? {
+        return Err(error(StatusCode::NOT_FOUND,"Template not found or built-in"));
+    }
+    Ok(Json(json!({"deleted":true})))
+}
+
 pub fn router(state: State) -> Router {
     Router::new()
         .route("/",get(index))
         .route("/app.js",get(js))
         .route("/style.css",get(css))
         .route("/api/health/live",get(health))
+        .route("/api/templates",get(templates_list).post(templates_create))
+        .route("/api/templates/{id}",get(templates_get).put(templates_update)
+            .delete(templates_delete))
         .route("/api/subscriptions",get(list).post(create))
         .route("/api/subscriptions/{id}",get(detail).put(update).delete(delete))
         .route("/api/subscriptions/{id}/refresh",axum::routing::post(refresh))
