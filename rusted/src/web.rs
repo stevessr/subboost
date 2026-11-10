@@ -1,4 +1,4 @@
-use crate::{config, filter, parser, schedule, store, templates, State};
+use crate::{config, filter, metadata, parser, schedule, store, templates, State};
 use axum::{
     body::Body,
     extract::{Path, Query, State as AppState},
@@ -171,7 +171,8 @@ async fn source_client(source:&Url)->Result<reqwest::Client,String>{
         .build().map_err(|e|e.to_string())
 }
 
-async fn fetch_source(_client: &reqwest::Client, source: &str) -> Result<Vec<serde_yaml::Value>, String> {
+async fn fetch_source(_client: &reqwest::Client, source: &str)
+    -> Result<(Vec<serde_yaml::Value>,metadata::SubscriptionInfo), String> {
     let parsed = Url::parse(source).map_err(|e|e.to_string())?;
     if !matches!(parsed.scheme(),"http"|"https") || parsed.host_str().is_none() {
         return Err("Source must be HTTP(S)".into());
@@ -180,6 +181,9 @@ async fn fetch_source(_client: &reqwest::Client, source: &str) -> Result<Vec<ser
     let client=source_client(&parsed).await?;
     let mut response=client.get(source).send().await.map_err(|e|e.to_string())?;
     if !response.status().is_success() {return Err(format!("Source HTTP status {}",response.status()));}
+    let source_info=response.headers().get("subscription-userinfo")
+        .and_then(|v|v.to_str().ok()).map(metadata::SubscriptionInfo::parse)
+        .unwrap_or_default();
     if response.content_length().map(|n|n>3*1024*1024).unwrap_or(false) {
         return Err("Source is too large".into());
     }
@@ -189,7 +193,7 @@ async fn fetch_source(_client: &reqwest::Client, source: &str) -> Result<Vec<ser
         bytes.extend_from_slice(&chunk);
     }
     let data=String::from_utf8(bytes).map_err(|_| "Source is not UTF-8")?;
-    parser::parse_document(&data)
+    Ok((parser::parse_document(&data)?,source_info))
 }
 
 pub(crate) async fn refresh_profile(state:&State,id:&str) -> Result<store::Subscription,ApiError> {
@@ -198,29 +202,35 @@ pub(crate) async fn refresh_profile(state:&State,id:&str) -> Result<store::Subsc
         sql(store::by_id(&db,id))?.ok_or_else(||error(StatusCode::NOT_FOUND,"Not found"))?
     };
     let mut nodes=Vec::new();
-    let mut successful=Vec::<(String,String)>::new();
+    let mut successful=Vec::<(String,String,metadata::SubscriptionInfo)>::new();
+    let mut combined_info=metadata::SubscriptionInfo::default();
     let mut failures=Vec::<String>::new();
     // Each successful source is persisted independently; one bad source
     // must not erase nodes obtained from another source.
     for source in &original.source_urls {
         match fetch_source(&state.client,source).await {
-            Ok(found)=>{
+            Ok((found,source_info))=>{
                 let yaml=serde_yaml::to_string(&found).map_err(bad)?;
                 nodes.extend(found);
-                successful.push((source.clone(),yaml));
+                combined_info.merge(&source_info);
+                successful.push((source.clone(),yaml,source_info));
             }
             Err(e)=>{
                 let host=Url::parse(source)
                     .ok().and_then(|u|u.host_str().map(str::to_owned))
                     .unwrap_or_else(||"source".into());
                 failures.push(format!("{host}: {e}"));
-                let cached={
+                let (cached,source_info)={
                     let db=lock(state)?;
-                    sql(store::source_nodes(&db,id,source))?
+                    (sql(store::source_nodes(&db,id,source))?,
+                     sql(store::source_info(&db,id,source))?)
                 };
                 if let Some(cached)=cached {
                     match serde_yaml::from_str::<Vec<serde_yaml::Value>>(&cached) {
-                        Ok(previous)=>nodes.extend(previous),
+                        Ok(previous)=>{
+                            nodes.extend(previous);
+                            combined_info.merge(&source_info);
+                        },
                         Err(e)=>failures.push(format!("{host}: cached nodes invalid: {e}"))
                     }
                 }
@@ -263,7 +273,7 @@ pub(crate) async fn refresh_profile(state:&State,id:&str) -> Result<store::Subsc
     let yaml=serde_yaml::to_string(&nodes).map_err(bad)?;
     let db=lock(state)?;
     if !sql(store::commit_refresh_if_revision(&db,id,original.revision,&yaml,
-             &error_message,&successful))?{
+             &error_message,&successful,Some(&combined_info)))?{
         return Err(error(StatusCode::CONFLICT,"Profile changed during refresh"));
     }
     sql(schedule::complete(&db,id,failures.is_empty()))?;
@@ -314,7 +324,7 @@ async fn export(AppState(state): AppState<State>,
     if !matches!(target,"mihomo"|"clash-rs"|"nikki-rs") {
         return error(StatusCode::BAD_REQUEST,"Unsupported target").into_response();
     }
-    let (sub,options)={
+    let (sub,options,subscription_info,refresh_interval)={
         let db=match lock(&state) {Ok(v)=>v,Err(e)=>return e.into_response()};
         let sub=match sql(store::by_token(&db,&token)) {
             Ok(Some(s))=>s,
@@ -325,15 +335,38 @@ async fn export(AppState(state): AppState<State>,
             Ok(v)=>v,
             Err(e)=>return e.into_response(),
         };
-        (sub,options)
+        let info=match sql(store::info(&db,&sub.id)){
+            Ok(v)=>v,
+            Err(e)=>return e.into_response(),
+        };
+        let interval=match sql(schedule::get(&db,&sub.id)){
+            Ok(v)=>v.map(|s|s.interval_seconds),
+            Err(e)=>return e.into_response(),
+        };
+        (sub,options,info,interval)
     };
     match config::generate_filtered(&sub,target,&options) {
-        Ok(yaml)=>Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE,"application/yaml; charset=utf-8")
-            .header(header::CACHE_CONTROL,"no-store")
-            .header("x-content-type-options","nosniff")
-            .body(Body::from(yaml)).unwrap(),
+        Ok(yaml)=>{
+            // Only use percent-encoded RFC 5987 filenames to avoid header
+            // injection from user-supplied configuration names.
+            let encoded=percent_encoding::utf8_percent_encode(
+                &sub.name,percent_encoding::NON_ALPHANUMERIC).to_string();
+            let mut response=Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE,"text/yaml; charset=utf-8")
+                .header(header::CONTENT_DISPOSITION,
+                    format!("attachment; filename*=UTF-8''{encoded}"))
+                .header(header::CACHE_CONTROL,"no-store")
+                .header("x-content-type-options","nosniff");
+            if let Some(quota)=subscription_info.header(){
+                response=response.header("subscription-userinfo",quota);
+            }
+            if let Some(seconds)=refresh_interval {
+                response=response.header("profile-update-interval",
+                    ((seconds+3599)/3600).max(1).to_string());
+            }
+            response.body(Body::from(yaml)).unwrap()
+        },
         Err(e)=>error(StatusCode::UNPROCESSABLE_ENTITY,e).into_response(),
     }
 }
@@ -391,6 +424,16 @@ async fn templates_delete(AppState(state): AppState<State>,headers: HeaderMap,
     Ok(Json(json!({"deleted":true})))
 }
 
+async fn subscription_info(AppState(state):AppState<State>, headers:HeaderMap,
+    Path(id):Path<String>) -> ApiResult<metadata::SubscriptionInfo> {
+    authorized(&state,&headers)?;
+    let db=lock(&state)?;
+    if sql(store::by_id(&db,&id))?.is_none(){
+        return Err(error(StatusCode::NOT_FOUND,"Subscription not found"));
+    }
+    Ok(Json(sql(store::info(&db,&id))?))
+}
+
 async fn filter_get(AppState(state):AppState<State>, headers:HeaderMap,
     Path(id):Path<String>) -> ApiResult<filter::NodeNameFilter>{
     authorized(&state,&headers)?;
@@ -434,6 +477,7 @@ pub fn router(state: State) -> Router {
         .route("/api/subscriptions/{id}/refresh",axum::routing::post(refresh))
         .route("/api/subscriptions/{id}/schedule",
             get(schedule_get).put(schedule_set).delete(schedule_disable))
+        .route("/api/subscriptions/{id}/info",get(subscription_info))
         .route("/api/subscriptions/{id}/filter",
             get(filter_get).put(filter_set).delete(filter_delete))
         .route("/api/subscriptions/{id}/rotate",axum::routing::post(rotate))
@@ -465,6 +509,10 @@ mod tests {
             manual_yaml:"proxies:\n  - {name: A, type: ss, server: example.org, port: 8388, cipher: aes-128-gcm, password: pwd}\n".into(),
             rules_text:String::new(),
         }).unwrap();
+        let info=metadata::SubscriptionInfo::parse(
+            "upload=1024; download=2048; total=8192; expire=1800000000");
+        assert!(store::commit_refresh_if_revision(&db,&sub.id,sub.revision,
+            "", "", &[],Some(&info)).unwrap());
         let state=State {db:std::sync::Arc::new(std::sync::Mutex::new(db)),
             admin_token:std::sync::Arc::new("s".repeat(43)),
             client:reqwest::Client::new()};
@@ -480,5 +528,8 @@ mod tests {
             .uri(format!("/api/subscriptions/{}/config.yaml?target=clash-rs",sub.token))
             .body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(yaml.status(),StatusCode::OK);
+        assert_eq!(yaml.headers().get("subscription-userinfo").unwrap(),
+            "upload=1024; download=2048; total=8192; expire=1800000000");
+        assert!(yaml.headers().get("content-disposition").is_some());
     }
 }
