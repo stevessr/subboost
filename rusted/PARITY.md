@@ -14,7 +14,7 @@ configuration output and automated black-box coverage before marking parity.
 | Scheduled updates | local/src/lib/auto-update-service.ts | Partial | Persistent 360s+ schedule, serialized worker, exponential backoff; upstream failure-state and quotas more sophisticated |
 | Templates | local/src/lib/template-service.ts | Partial | Three native presets + custom YAML saved in SQLite; upstream template schema/modules/built-ins not fully migrated |
 | Node name regex include/exclude | packages/core/src/subscription/node-name-filter.ts | Implemented core | Bounded linear-time Rust regex, persisted settings; origin-name semantics differ for renamed nodes |
-| Protocol URI parsing | packages/core/src/parser/protocols/* | Partial | SS/VMess/VLESS/Trojan/Hysteria2/TUIC/AnyTLS/SSR/WireGuard; advanced options, Hysteria v1, Snell, Loon, QX, Surge, Netch not complete |
+| Protocol URI parsing | packages/core/src/parser/protocols/* | Partial | SS/VMess/VLESS/Trojan/Hysteria2/TUIC/AnyTLS/SSR/WireGuard; VLESS/Trojan WS Early Data, gRPC, TLS aliases and encoded credentials improved in PR #9; advanced options, Hysteria v1, Snell, Loon, QX, Surge, Netch not complete |
 | Clash YAML proxy import | packages/core/src/parser/clash-yaml.ts | Partial | Preserves proxy entries, strips remote dialer control; alternate Clash field formats incomplete |
 | Built-in region and services groups | packages/core/src/generator/proxy-group-modules.ts | Partial | 36 upstream modules and 94 MRS rules now embedded and opt-in; advanced per-module settings, rule edits and semantics still need cross-output fixtures |
 | Custom proxy group graph | packages/core/src/generator/proxy-groups.ts | Partial | Manual YAML custom groups preserved; automatic region filter, module, health-check and reference validation not equivalent |
@@ -57,3 +57,12 @@ SubBoost Cortex-A53 footprint Action for exact data.
 **Do not label this port feature-complete while critical rows are Partial
 or Missing.** The Rust backend and Next.js/Prisma app remain separate
 products until their behavior converges.
+
+## Incremental parser parity gate (PR #9)
+
+- Canonical shared fixtures live at `rusted/data/uri-parity-fixtures.json`.
+- Original TypeScript parser assertion: `packages/core/src/parser/protocols/rs-parity.test.ts`.
+- Native Rust assertion: `rusted/src/parser.rs::tests::shared_upstream_uri_contract`.
+- `SubBoost RS (Rust + SQLite)` CI now gates MUSL artifacts on both parsers.
+- **As of this change, no workflow runs are associated with the PR head**. These checks are pending execution; parity is not certified and this PR must remain unmerged.
+- This fixture subset is a compatibility seed, not a claim of full parity. Broaden the corpus to all protocols, provider outputs, DNS/rule semantics, templates, node identity, profile lifecycle and UI/API before a 1:1 release.
