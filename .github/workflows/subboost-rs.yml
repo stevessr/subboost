@@ -1,0 +1,73 @@
+name: SubBoost RS (Rust + SQLite)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'feat/**', 'fix/**']
+    paths:
+      - 'rusted/**'
+      - '.github/workflows/subboost-rs.yml'
+  pull_request:
+    paths:
+      - 'rusted/**'
+      - '.github/workflows/subboost-rs.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rusted
+      - name: SQLite, parser, HTTP endpoint and YAML regression tests
+        run: cargo test --manifest-path rusted/Cargo.toml --all-targets
+
+  musl:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: \${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rusted
+          key: \${{ matrix.target }}
+      - uses: goto-bus-stop/setup-zig@v2
+      - name: Install Zig cross linker
+        run: cargo install cargo-zigbuild --locked
+      - name: Cross compile portable OpenWrt/musl binary
+        run: cargo zigbuild --manifest-path rusted/Cargo.toml --release --target '\${{ matrix.target }}'
+      - name: Archive binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          binary='rusted/target/\${{ matrix.target }}/release/subboost-rs'
+          file "$binary"
+          chmod +x "$binary"
+          cp "$binary" release/subboost-rs
+          tar -czf "subboost-rs-\${{ matrix.target }}.tar.gz" -C release subboost-rs
+          sha256sum "subboost-rs-\${{ matrix.target }}.tar.gz" > "subboost-rs-\${{ matrix.target }}.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: subboost-rs-\${{ matrix.target }}
+          path: |
+            subboost-rs-\${{ matrix.target }}.tar.gz
+            subboost-rs-\${{ matrix.target }}.sha256
+          if-no-files-found: error
+          retention-days: 14
