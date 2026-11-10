@@ -296,34 +296,168 @@ fn parse_vless(raw: &str) -> Result<Value, String> {
     node(proxy)
 }
 
-fn parse_vmess(raw: &str) -> Result<Value, String> {
-    let encoded = raw.trim_start_matches("vmess://").trim();
-    let bytes = decode_base64(encoded).ok_or("Invalid VMess base64")?;
-    let settings: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-    let server = settings["add"].as_str().ok_or("VMess missing server")?;
-    let port = settings["port"].as_u64().or_else(|| settings["port"].as_str().and_then(|v| v.parse().ok()))
-        .ok_or("VMess missing port")?;
+fn json_string<'a>(object: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    object.get(key).and_then(serde_json::Value::as_str)
+}
+fn json_number(object: &serde_json::Value, key: &str) -> Option<u64> {
+    object.get(key).and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+}
+fn json_bool(value: &serde_json::Value) -> Option<bool> {
+    match value {
+        serde_json::Value::Bool(v) => Some(*v),
+        serde_json::Value::Number(n) => match n.as_i64() { Some(1) => Some(true), Some(0) => Some(false), _ => None },
+        serde_json::Value::String(s) => match s.to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" | "on" => Some(true),
+            "false" | "0" | "no" | "off" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+fn csv_list(raw: &str) -> Vec<String> {
+    raw.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect()
+}
+fn parse_vmess_config(settings: &serde_json::Value) -> Result<Value, String> {
+    let server = json_string(settings, "add").filter(|s| !s.is_empty()).ok_or("VMess missing server")?;
+    let port = json_number(settings, "port").ok_or("VMess missing port")?;
     if port == 0 || port > 65535 { return Err("VMess port out of range".into()); }
-    let id = settings["id"].as_str().ok_or("VMess missing id")?;
-    let name = settings["ps"].as_str().unwrap_or(server);
-    let network = settings["net"].as_str().unwrap_or("tcp");
+    let uuid = json_string(settings, "id").filter(|s| !s.is_empty()).ok_or("VMess missing id")?;
+    let name = json_string(settings, "ps").filter(|s| !s.is_empty()).unwrap_or("VMess 节点");
+    let network = json_string(settings, "net").unwrap_or("tcp").to_ascii_lowercase();
+    let network = match network.as_str() {
+        "tcp" | "none" => "tcp", "ws" | "websocket" => "ws",
+        "grpc" => "grpc", "h2" => "h2", "http" => "http",
+        "httpupgrade" => "ws",
+        other => return Err(format!("Unsupported VMess transport: {other}")),
+    };
+    let http_obfs = network == "tcp" && json_string(settings, "type") == Some("http");
+    let transport = if http_obfs { "http" } else { network };
+    let tls = json_string(settings, "tls") == Some("tls");
+    let host = json_string(settings, "host").unwrap_or("");
+    let path = json_string(settings, "path").unwrap_or("/");
+    let alter_id = json_number(settings, "aid").unwrap_or(0);
+    let cipher = json_string(settings, "scy")
+        .or_else(|| json_string(settings, "encryption"))
+        .filter(|v| !v.is_empty()).unwrap_or("auto");
     let mut proxy = serde_json::json!({
         "name":name, "type":"vmess", "server":server, "port":port,
-        "uuid":id, "alterId": settings["aid"].as_u64().unwrap_or(0),
-        "cipher": settings["scy"].as_str().filter(|v| !v.is_empty()).unwrap_or("auto"),
-        "tls": settings["tls"].as_str().map(|s| s == "tls").unwrap_or(false),
-        "network": network,
+        "uuid":uuid, "alterId":alter_id, "cipher":cipher,
+        "udp":true, "tls":tls, "network":transport,
     });
-    if network == "ws" {
-        proxy["ws-opts"] = serde_json::json!({
-            "path": settings["path"].as_str().unwrap_or("/"),
-            "headers": {"Host":settings["host"].as_str().unwrap_or(server)}
-        });
+    let sni = json_string(settings, "sni").filter(|s| !s.is_empty())
+        .unwrap_or_else(|| host.split(',').next().unwrap_or("").trim());
+    if !sni.is_empty() { proxy["servername"] = serde_json::json!(sni); }
+    if let Some(fp) = json_string(settings, "fp").filter(|s| !s.is_empty()) {
+        proxy["client-fingerprint"] = serde_json::json!(fp);
     }
-    if let Some(sni) = settings["sni"].as_str().filter(|v| !v.is_empty()) {
-        proxy["servername"] = serde_json::json!(sni);
+    if let Some(alpn) = json_string(settings, "alpn") {
+        let items = csv_list(alpn);
+        if !items.is_empty() { proxy["alpn"] = serde_json::json!(items); }
+    }
+    if settings.get("allowInsecure").and_then(json_bool) == Some(true) {
+        proxy["skip-cert-verify"] = serde_json::json!(true);
+    }
+    if let Some(encoding) = json_string(settings, "packet-encoding")
+        .or_else(|| json_string(settings, "packetEncoding")) {
+        if !encoding.is_empty() { proxy["packet-encoding"] = serde_json::json!(encoding); }
+    }
+    for (input, alt, output) in [
+        ("authenticated-length", "authenticatedLength", "authenticated-length"),
+        ("global-padding", "globalPadding", "global-padding"),
+    ] {
+        if let Some(value) = settings.get(input).or_else(||settings.get(alt)).and_then(json_bool) {
+            proxy[output] = serde_json::json!(value);
+        }
+    }
+    match transport {
+        "ws" => {
+            let (path, early_data) = ws_path_early_data(path);
+            let mut opts = serde_json::json!({"path":path});
+            if let Some(host) = csv_list(host).first() {
+                opts["headers"] = serde_json::json!({"Host":host});
+            }
+            if let Some(value) = early_data {
+                opts["max-early-data"] = serde_json::json!(value);
+                opts["early-data-header-name"] = serde_json::json!("Sec-WebSocket-Protocol");
+            }
+            if json_string(settings, "net") == Some("httpupgrade") {
+                opts["v2ray-http-upgrade"] = serde_json::json!(true);
+                opts["v2ray-http-upgrade-fast-open"] = serde_json::json!(true);
+            }
+            if path != "/" || opts.get("headers").is_some() || early_data.is_some() {
+                proxy["ws-opts"] = opts;
+            }
+        },
+        "grpc" => {
+            let service = json_string(settings, "serviceName").filter(|s| !s.is_empty())
+                .unwrap_or(path);
+            let mut opts = serde_json::json!({"grpc-service-name":service});
+            if let Some(mode) = json_string(settings, "mode").filter(|s| !s.is_empty()) {
+                opts["_grpcType"] = serde_json::json!(mode);
+            }
+            if let Some(authority) = json_string(settings, "authority").filter(|s| !s.is_empty()) {
+                opts["_grpcAuthority"] = serde_json::json!(authority);
+            }
+            proxy["grpc-opts"] = opts;
+        },
+        "h2" => {
+            let mut opts = serde_json::json!({"path":path});
+            let hosts = csv_list(host);
+            if !hosts.is_empty() { opts["host"] = serde_json::json!(hosts); }
+            proxy["h2-opts"] = opts;
+        },
+        "http" => {
+            let paths = csv_list(path);
+            let mut opts = serde_json::json!({
+                "method":json_string(settings, "method").unwrap_or("GET").to_ascii_uppercase(),
+                "path":if paths.is_empty() {vec!["/".to_string()]} else {paths},
+            });
+            let hosts = csv_list(host);
+            if !hosts.is_empty() { opts["headers"] = serde_json::json!({"Host":hosts}); }
+            proxy["http-opts"] = opts;
+        },
+        _ => {},
     }
     node(proxy)
+}
+fn parse_vmess(raw: &str) -> Result<Value, String> {
+    // Standard JSON links and URI-style VMess are both emitted by upstream clients.
+    let raw = raw.trim_start_matches("vmess://");
+    if raw.contains('@') {
+        let url = Url::parse(&format!("vmess://{raw}")).map_err(|e| e.to_string())?;
+        let secure = query_param(&url, "security").as_deref() == Some("tls")
+            || query_bool(&url, "tls");
+        let port = url.port().unwrap_or(if secure {443} else {80});
+        if port == 0 { return Err("VMess port out of range".into()); }
+        let mut settings = serde_json::json!({
+            "add":url.host_str().ok_or("VMess missing server")?,
+            "port":port,
+            "id":percent_encoding::percent_decode_str(url.username()).decode_utf8_lossy(),
+            "ps":fragment_name(&url,"VMess 节点"),
+            "aid":query_param(&url,"aid").unwrap_or_else(||"0".into()),
+            "scy":query_param(&url,"encryption").unwrap_or_else(||"auto".into()),
+            "net":query_param(&url,"type").unwrap_or_else(||"tcp".into()),
+            "host":query_param(&url,"host").unwrap_or_default(),
+            "path":query_param(&url,"path").unwrap_or_else(||"/".into()),
+            "tls":if secure {"tls"} else {""},
+        });
+        for (param, field) in [
+            ("sni","sni"),("alpn","alpn"),("fp","fp"),
+            ("serviceName","serviceName"),("method","method"),
+        ] {
+            if let Some(v) = query_param(&url,param) { settings[field]=serde_json::json!(v); }
+        }
+        if query_bool(&url,"allowInsecure") { settings["allowInsecure"]=serde_json::json!(true); }
+        return parse_vmess_config(&settings);
+    }
+    let encoded = raw.split('#').next().unwrap_or("").trim();
+    let bytes = decode_base64(encoded).ok_or("Invalid VMess base64")?;
+    let mut settings: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    if let Some(fragment) = raw.split_once('#').map(|(_,v)|v).filter(|s|!s.is_empty()) {
+        settings["ps"] = serde_json::json!(
+            percent_encoding::percent_decode_str(fragment).decode_utf8_lossy().to_string());
+    }
+    parse_vmess_config(&settings)
 }
 
 pub fn parse_uri(uri: &str) -> Result<Value, String> {
