@@ -63,6 +63,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr: SocketAddr = env::var("SUBBOOST_BIND")
         .unwrap_or_else(|_| "0.0.0.0:3000".into()).parse()?;
     let listener = TcpListener::bind(addr).await?;
+    // Single serial worker avoids RAM spikes from simultaneous provider refreshes
+    // on Cortex-A53 class routers. Claims are persisted before network I/O.
+    let scheduler=state.clone();
+    tokio::spawn(async move {
+        let mut tick=tokio::time::interval(std::time::Duration::from_secs(30));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tick.tick().await;
+            let due = {
+                match scheduler.db.lock() {
+                    Ok(db) => schedule::claim_due(&db,4),
+                    Err(_) => break,
+                }
+            };
+            match due {
+                Ok(ids) => for id in ids {
+                    if let Err((status,_))=web::refresh_profile(&scheduler,&id).await {
+                        eprintln!("Auto refresh failed for {id} (HTTP {status})");
+                    }
+                },
+                Err(e)=> eprintln!("Auto refresh SQLite: {e}"),
+            }
+        }
+    });
     eprintln!("SubBoost-RS listening on {addr}; admin token at {}", token_file.display());
     axum::serve(listener, web::router(state)).await?;
     Ok(())

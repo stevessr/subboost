@@ -1,4 +1,4 @@
-use crate::{config, parser, store, templates, State};
+use crate::{config, parser, schedule, store, templates, State};
 use axum::{
     body::Body,
     extract::{Path, Query, State as AppState},
@@ -7,6 +7,7 @@ use axum::{
     routing::get,
     Json, Router,
 };
+use serde::{Deserialize};
 use serde_json::{json, Value as JsonValue};
 use std::collections::HashMap;
 use subtle::ConstantTimeEq;
@@ -143,30 +144,78 @@ async fn fetch_source(client: &reqwest::Client, source: &str) -> Result<Vec<serd
     parser::parse_document(&data)
 }
 
-async fn refresh(AppState(state): AppState<State>, headers: HeaderMap,
-                 Path(id): Path<String>) -> ApiResult<store::Subscription> {
-    authorized(&state,&headers)?;
+pub(crate) async fn refresh_profile(state:&State,id:&str) -> Result<store::Subscription,ApiError> {
     let original={
-        let db=lock(&state)?;
-        sql(store::by_id(&db,&id))?.ok_or_else(||error(StatusCode::NOT_FOUND,"Not found"))?
+        let db=lock(state)?;
+        sql(store::by_id(&db,id))?.ok_or_else(||error(StatusCode::NOT_FOUND,"Not found"))?
     };
     let mut nodes=Vec::new();
     for source in &original.source_urls {
         match fetch_source(&state.client,source).await {
             Ok(found)=>nodes.extend(found),
             Err(e)=>{
-                let message=format!("Failed {}: {e}",Url::parse(source).map(|u|u.host_str().unwrap_or("source").to_owned()).unwrap_or_else(|_|"source".into()));
-                let db=lock(&state)?;
-                sql(store::save_refresh(&db,&id,&original.nodes_yaml,&message))?;
+                // Preserve a previously working node snapshot on any fetch failure.
+                let message=format!("Failed {}: {e}",
+                    Url::parse(source).map(|u|
+                        u.host_str().unwrap_or("source").to_owned())
+                        .unwrap_or_else(|_|"source".into()));
+                let db=lock(state)?;
+                let persisted=sql(store::save_refresh_if_sources(&db,id,
+                    &original.source_urls,&original.nodes_yaml,&message))?;
+                if !persisted {
+                    return Err(error(StatusCode::CONFLICT,"Sources changed during refresh"));
+                }
+                sql(schedule::complete(&db,id,false))?;
                 return Err(error(StatusCode::BAD_GATEWAY,message));
             }
         }
     }
     let nodes=parser::validate_nodes(nodes).map_err(bad)?;
     let yaml=serde_yaml::to_string(&nodes).map_err(bad)?;
+    let db=lock(state)?;
+    if !sql(store::save_refresh_if_sources(&db,id,&original.source_urls,&yaml,""))? {
+        return Err(error(StatusCode::CONFLICT,"Sources changed during refresh"));
+    }
+    sql(schedule::complete(&db,id,true))?;
+    sql(store::by_id(&db,id))?.ok_or_else(||error(StatusCode::NOT_FOUND,"Not found"))
+}
+
+async fn refresh(AppState(state): AppState<State>, headers: HeaderMap,
+                 Path(id): Path<String>) -> ApiResult<store::Subscription> {
+    authorized(&state,&headers)?;
+    Ok(Json(refresh_profile(&state,&id).await?))
+}
+
+#[derive(Deserialize)]
+struct ScheduleInput { interval_seconds:i64 }
+
+async fn schedule_get(AppState(state):AppState<State>, headers:HeaderMap,
+    Path(id):Path<String>) -> ApiResult<Option<schedule::Schedule>> {
+    authorized(&state,&headers)?;
     let db=lock(&state)?;
-    sql(store::save_refresh(&db,&id,&yaml,""))?;
-    Ok(Json(sql(store::by_id(&db,&id))?.ok_or_else(||error(StatusCode::NOT_FOUND,"Not found"))?))
+    if sql(store::by_id(&db,&id))?.is_none() {
+        return Err(error(StatusCode::NOT_FOUND,"Subscription not found"));
+    }
+    Ok(Json(sql(schedule::get(&db,&id))?))
+}
+
+async fn schedule_set(AppState(state):AppState<State>, headers:HeaderMap,
+    Path(id):Path<String>,Json(input):Json<ScheduleInput>)
+    -> ApiResult<schedule::Schedule> {
+    authorized(&state,&headers)?;
+    if !(schedule::MIN_INTERVAL..=schedule::MAX_INTERVAL).contains(&input.interval_seconds) {
+        return Err(bad("Auto refresh interval must be 360-604800 seconds"));
+    }
+    let db=lock(&state)?;
+    sql(schedule::set(&db,&id,input.interval_seconds))?.map(Json)
+        .ok_or_else(||error(StatusCode::NOT_FOUND,"Subscription not found"))
+}
+
+async fn schedule_disable(AppState(state):AppState<State>, headers:HeaderMap,
+    Path(id):Path<String>) -> ApiResult<JsonValue> {
+    authorized(&state,&headers)?;
+    let db=lock(&state)?;
+    Ok(Json(json!({"disabled":sql(schedule::disable(&db,&id))?})))
 }
 
 async fn export(AppState(state): AppState<State>,
@@ -259,6 +308,8 @@ pub fn router(state: State) -> Router {
         .route("/api/subscriptions",get(list).post(create))
         .route("/api/subscriptions/{id}",get(detail).put(update).delete(delete))
         .route("/api/subscriptions/{id}/refresh",axum::routing::post(refresh))
+        .route("/api/subscriptions/{id}/schedule",
+            get(schedule_get).put(schedule_set).delete(schedule_disable))
         .route("/api/subscriptions/{id}/rotate",axum::routing::post(rotate))
         .route("/api/subscriptions/{token}/config.yaml",get(export))
         .with_state(state)

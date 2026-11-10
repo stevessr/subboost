@@ -33,6 +33,8 @@ function blank() {
   el('editor-title').textContent='新建订阅';
   el('exports').classList.add('hidden');
   el('refresh').disabled=true;el('delete').disabled=true;
+  el('refresh-interval').disabled=true;el('refresh-interval').value='0';
+  el('refresh-status').textContent='保存配置后可设置自动刷新。';
   renderList();
 }
 function show(profile) {
@@ -44,6 +46,8 @@ function show(profile) {
   el('editor-title').textContent=profile.name;
   el('exports').classList.remove('hidden');
   el('refresh').disabled=false;el('delete').disabled=false;
+  el('refresh-interval').disabled=false;
+  updateSchedule(profile.id);
   el('rs-url').textContent=link(profile,'clash-rs');
   el('mihomo-url').textContent=link(profile,'mihomo');
   renderList();
@@ -103,6 +107,27 @@ el('login-form').addEventListener('submit',async(e)=>{
 });
 el('logout').addEventListener('click',()=>{
   sessionStorage.removeItem('subboost-rs-admin');admin='';profiles=[];blank();activate();
+});
+async function updateSchedule(id){
+  try{
+    const info=await api('/api/subscriptions/'+id+'/schedule');
+    if(!current||current.id!==id)return;
+    el('refresh-interval').value=info?String(info.interval_seconds):'0';
+    el('refresh-status').textContent=info?
+      '下次检查：'+new Date(info.next_refresh_at*1000).toLocaleString()+
+      ' · 连续失败：'+info.consecutive_failures : '自动刷新已关闭';
+  }catch(err){notice(err.message,true);}
+}
+el('refresh-interval').addEventListener('change',async()=>{
+  if(!current)return;
+  const id=current.id,seconds=Number(el('refresh-interval').value);
+  try {
+    if(seconds===0)await api('/api/subscriptions/'+id+'/schedule',{method:'DELETE'});
+    else await api('/api/subscriptions/'+id+'/schedule',{
+      method:'PUT',body:JSON.stringify({interval_seconds:seconds})});
+    await updateSchedule(id);
+    notice(seconds===0?'已关闭定时更新':'已设置定时更新（失败后自动退避）');
+  }catch(err){notice(err.message,true);}
 });
 el('new').addEventListener('click',blank);
 el('apply-template').addEventListener('click',()=>{

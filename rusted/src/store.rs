@@ -135,6 +135,19 @@ pub fn save_refresh(db: &Connection, id: &str, nodes_yaml: &str, error: &str) ->
     Ok(())
 }
 
+
+/// Update only if sources have not changed during an asynchronous refresh.
+/// This avoids resurrecting old provider nodes after a subscription edit.
+pub fn save_refresh_if_sources(db:&Connection,id:&str,expected:&[String],
+        nodes_yaml:&str,error:&str)->rusqlite::Result<bool>{
+    let sources_json=serde_json::to_string(expected).map_err(|e|
+        rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+    Ok(db.execute(
+        "UPDATE subscriptions SET nodes_yaml=?2,last_error=?3,updated_at=?4
+         WHERE id=?1 AND sources_json=?5",
+        params![id,nodes_yaml,error,now(),sources_json])?!=0)
+}
+
 pub fn delete(db: &Connection, id: &str) -> rusqlite::Result<bool> {
     Ok(db.execute("DELETE FROM subscriptions WHERE id=?1", params![id])? != 0)
 }
