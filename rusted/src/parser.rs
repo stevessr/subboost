@@ -78,7 +78,7 @@ fn parse_ss(raw: &str) -> Result<Value, String> {
     }).unwrap_or_else(|| server.clone());
     node(serde_json::json!({
         "name": name, "type": "ss", "server": server, "port": port,
-        "cipher": cipher, "password": password,
+        "cipher": cipher, "password": password, "udp": true,
     }))
 }
 
@@ -185,7 +185,7 @@ fn parse_trojan(raw: &str) -> Result<Value, String> {
     let network = query_param(&url, "type").unwrap_or_else(|| "tcp".into());
     let mut proxy = serde_json::json!({
         "name": fragment_name(&url, &server), "type": "trojan", "server": server,
-        "port": port, "password": password, "tls": true,
+        "port": port, "password": password, "udp": true, "sni": server,
     });
     if let Some(sni) = query_param(&url, "sni") { proxy["sni"] = serde_json::json!(sni); }
     tls_options(&url, &mut proxy);
@@ -206,7 +206,7 @@ fn parse_vless(raw: &str) -> Result<Value, String> {
     let network = query_param(&url, "type").unwrap_or_else(|| "tcp".into());
     let mut proxy = serde_json::json!({
         "name": fragment_name(&url, &server), "type": "vless",
-        "server": server, "port": port, "uuid": url.username(),
+        "server": server, "port": port, "uuid": url.username(), "udp": true,
         "tls": matches!(security.as_str(), "tls" | "reality"),
         "network": network,
     });
@@ -340,7 +340,7 @@ mod tests {
             let uri = fixture["uri"].as_str().unwrap();
             let node = parse_uri(uri).unwrap_or_else(|err| panic!("{}: {err}", fixture["id"]));
             let mut actual = serde_json::Map::new();
-            for key in ["name", "type", "server", "port", "network", "cipher", "password"] {
+            for key in ["name", "type", "server", "port", "network", "cipher", "password", "udp", "sni"] {
                 if let Some(value) = node.get(key) {
                     actual.insert(key.into(), serde_json::to_value(value).unwrap());
                 }
