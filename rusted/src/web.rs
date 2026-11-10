@@ -198,33 +198,75 @@ pub(crate) async fn refresh_profile(state:&State,id:&str) -> Result<store::Subsc
         sql(store::by_id(&db,id))?.ok_or_else(||error(StatusCode::NOT_FOUND,"Not found"))?
     };
     let mut nodes=Vec::new();
+    let mut successful=Vec::<(String,String)>::new();
+    let mut failures=Vec::<String>::new();
+    // Each successful source is persisted independently; one bad source
+    // must not erase nodes obtained from another source.
     for source in &original.source_urls {
         match fetch_source(&state.client,source).await {
-            Ok(found)=>nodes.extend(found),
+            Ok(found)=>{
+                let yaml=serde_yaml::to_string(&found).map_err(bad)?;
+                nodes.extend(found);
+                successful.push((source.clone(),yaml));
+            }
             Err(e)=>{
-                // Preserve a previously working node snapshot on any fetch failure.
-                let message=format!("Failed {}: {e}",
-                    Url::parse(source).map(|u|
-                        u.host_str().unwrap_or("source").to_owned())
-                        .unwrap_or_else(|_|"source".into()));
-                let db=lock(state)?;
-                let persisted=sql(store::save_refresh_if_revision(&db,id,
-                    original.revision,&original.nodes_yaml,&message))?;
-                if !persisted {
-                    return Err(error(StatusCode::CONFLICT,"Sources changed during refresh"));
+                let host=Url::parse(source)
+                    .ok().and_then(|u|u.host_str().map(str::to_owned))
+                    .unwrap_or_else(||"source".into());
+                failures.push(format!("{host}: {e}"));
+                let cached={
+                    let db=lock(state)?;
+                    sql(store::source_nodes(&db,id,source))?
+                };
+                if let Some(cached)=cached {
+                    match serde_yaml::from_str::<Vec<serde_yaml::Value>>(&cached) {
+                        Ok(previous)=>nodes.extend(previous),
+                        Err(e)=>failures.push(format!("{host}: cached nodes invalid: {e}"))
+                    }
                 }
-                sql(schedule::complete(&db,id,false))?;
-                return Err(error(StatusCode::BAD_GATEWAY,message));
             }
         }
     }
-    let nodes=parser::validate_nodes(nodes).map_err(bad)?;
+    let error_message=failures.join("; ");
+    if !original.source_urls.is_empty() && successful.is_empty() {
+        // Keep the known-good full snapshot and report a retryable failure.
+        let db=lock(state)?;
+        if !sql(store::save_refresh_if_revision(&db,id,original.revision,
+                &original.nodes_yaml,&error_message))?{
+            return Err(error(StatusCode::CONFLICT,"Profile changed during refresh"));
+        }
+        sql(schedule::complete(&db,id,false))?;
+        return Err(error(StatusCode::BAD_GATEWAY,error_message));
+    }
+    let nodes=match parser::validate_nodes(nodes) {
+        Ok(nodes)=>nodes,
+        Err(message)=>{
+            let db=lock(state)?;
+            if !sql(store::save_refresh_if_revision(&db,id,original.revision,
+                    &original.nodes_yaml,&message))?{
+                return Err(error(StatusCode::CONFLICT,"Profile changed during refresh"));
+            }
+            sql(schedule::complete(&db,id,false))?;
+            return Err(bad(message));
+        }
+    };
+    if original.source_urls.len()>0 && nodes.is_empty(){
+        let message="All subscription sources returned zero nodes";
+        let db=lock(state)?;
+        if !sql(store::save_refresh_if_revision(&db,id,original.revision,
+                &original.nodes_yaml,message))?{
+            return Err(error(StatusCode::CONFLICT,"Profile changed during refresh"));
+        }
+        sql(schedule::complete(&db,id,false))?;
+        return Err(bad(message));
+    }
     let yaml=serde_yaml::to_string(&nodes).map_err(bad)?;
     let db=lock(state)?;
-    if !sql(store::save_refresh_if_revision(&db,id,original.revision,&yaml,""))? {
-        return Err(error(StatusCode::CONFLICT,"Sources changed during refresh"));
+    if !sql(store::commit_refresh_if_revision(&db,id,original.revision,&yaml,
+             &error_message,&successful))?{
+        return Err(error(StatusCode::CONFLICT,"Profile changed during refresh"));
     }
-    sql(schedule::complete(&db,id,true))?;
+    sql(schedule::complete(&db,id,failures.is_empty()))?;
     sql(store::by_id(&db,id))?.ok_or_else(||error(StatusCode::NOT_FOUND,"Not found"))
 }
 

@@ -80,6 +80,13 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     crate::templates::initialize(&db)?;
     crate::schedule::initialize(&db)?;
     crate::filter::initialize(&db)?;
+    db.execute_batch("CREATE TABLE IF NOT EXISTS subscription_source_cache(
+        subscription_id TEXT NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
+        source_hash TEXT NOT NULL,
+        nodes_yaml TEXT NOT NULL,
+        fetched_at INTEGER NOT NULL,
+        PRIMARY KEY(subscription_id,source_hash)
+    );")?;
     Ok(db)
 }
 
@@ -150,6 +157,50 @@ pub fn save_refresh(db: &Connection, id: &str, nodes_yaml: &str, error: &str) ->
 }
 
 
+fn source_hash(source: &str) -> String {
+    use sha2::{Digest,Sha256};
+    Sha256::digest(source.as_bytes()).iter().map(|v| format!("{v:02x}")).collect()
+}
+
+/// Read a single provider's last successful snapshot. Source URL/token
+/// is not copied into cache indexes or diagnostic logs.
+pub fn source_nodes(db:&Connection, id:&str, source:&str)->rusqlite::Result<Option<String>> {
+    db.query_row(
+        "SELECT nodes_yaml FROM subscription_source_cache
+         WHERE subscription_id=?1 AND source_hash=?2",
+        params![id,source_hash(source)],|r|r.get(0)
+    ).optional()
+}
+
+/// Atomically commit a complete profile snapshot AND any successful source
+/// cache updates, guarded by the revision. A rejected stale refresh does
+/// not modify the aggregate, error state, source cache or revision.
+pub fn commit_refresh_if_revision(
+    db:&Connection,id:&str,revision:i64,
+    nodes_yaml:&str,error:&str,updates:&[(String,String)]
+)->rusqlite::Result<bool>{
+    let transaction=db.unchecked_transaction()?;
+    let applied=transaction.execute(
+        "UPDATE subscriptions SET nodes_yaml=?3,last_error=?4,
+         updated_at=?5,revision=revision+1
+         WHERE id=?1 AND revision=?2",
+        params![id,revision,nodes_yaml,error,now()])?==1;
+    if !applied {transaction.rollback()?;return Ok(false);}
+    for (source,yaml) in updates {
+        transaction.execute(
+            "INSERT INTO subscription_source_cache
+             (subscription_id,source_hash,nodes_yaml,fetched_at)
+             VALUES (?1,?2,?3,?4)
+             ON CONFLICT(subscription_id,source_hash)
+             DO UPDATE SET nodes_yaml=excluded.nodes_yaml,
+             fetched_at=excluded.fetched_at",
+            params![id,source_hash(source),yaml,now()]
+        )?;
+    }
+    transaction.commit()?;
+    Ok(true)
+}
+
 /// Compare-and-swap the entire profile revision, not just its source URLs.
 /// A second refresh with the same source list and even a same-second edit
 /// must not overwrite a fresher snapshot.
@@ -157,12 +208,7 @@ pub fn save_refresh_if_revision(
     db: &Connection, id: &str, expected_revision: i64,
     nodes_yaml: &str, error: &str,
 ) -> rusqlite::Result<bool> {
-    Ok(db.execute(
-        "UPDATE subscriptions SET nodes_yaml=?3,last_error=?4,updated_at=?5,
-         revision=revision+1
-         WHERE id=?1 AND revision=?2",
-        params![id,expected_revision,nodes_yaml,error,now()]
-    )? == 1)
+    commit_refresh_if_revision(db,id,expected_revision,nodes_yaml,error,&[])
 }
 
 pub fn delete(db: &Connection, id: &str) -> rusqlite::Result<bool> {
@@ -203,6 +249,18 @@ mod tests {
         assert!(save_refresh_if_revision(&db,&sub.id,before.revision,"- {name: Fresh}", "").unwrap());
         assert!(!save_refresh_if_revision(&db,&sub.id,before.revision,"- {name: Stale}", "").unwrap());
         assert!(by_id(&db,&sub.id).unwrap().unwrap().nodes_yaml.contains("Fresh"));
+        let before_cache=by_id(&db,&sub.id).unwrap().unwrap();
+        let cached_url=before_cache.source_urls[0].clone();
+        assert!(commit_refresh_if_revision(&db,&sub.id,before_cache.revision,
+            "- {name: Live}","",
+            &[(cached_url.clone(),"- {name: Source}".into())]).unwrap());
+        assert_eq!(source_nodes(&db,&sub.id,&cached_url).unwrap().as_deref(),
+            Some("- {name: Source}"));
+        assert!(!commit_refresh_if_revision(&db,&sub.id,before_cache.revision,
+            "- {name: Stale}","",
+            &[(cached_url.clone(),"- {name: Old}".into())]).unwrap());
+        assert_eq!(source_nodes(&db,&sub.id,&cached_url).unwrap().as_deref(),
+            Some("- {name: Source}"));
         let before_edit = by_id(&db,&sub.id).unwrap().unwrap();
         update(&db,&sub.id,SubscriptionInput {
             name:"Edited".into(),source_urls:before_edit.source_urls.clone(),
