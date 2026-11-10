@@ -286,7 +286,7 @@ mod tests {
             source_urls:vec![], manual_yaml: "rule-providers:\n  cn:\n    type: http\n    behavior: domain\n    format: mrs\n    url: https://example.org/cn.mrs\n".into(),
             rules_text:"RULE-SET,cn,DIRECT\n".into(),
             nodes_yaml:"- {name: Node, type: ss, server: example.org, port: 8388, cipher: aes-128-gcm, password: pwd}\n".into(),
-            last_error:String::new(),updated_at:0}
+            last_error:String::new(),updated_at:0,revision:0}
     }
     #[test]
     fn clash_rs_provider_path_and_rules_are_namespaced() {

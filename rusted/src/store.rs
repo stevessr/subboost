@@ -14,6 +14,8 @@ pub struct Subscription {
     pub nodes_yaml: String,
     pub last_error: String,
     pub updated_at: i64,
+    /// Monotonic mutation counter used to reject stale asynchronous refreshes.
+    pub revision: i64,
 }
 
 #[derive(Deserialize)]
@@ -62,9 +64,19 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
             rules_text TEXT NOT NULL DEFAULT '',
             nodes_yaml TEXT NOT NULL DEFAULT '',
             last_error TEXT NOT NULL DEFAULT '',
-            updated_at INTEGER NOT NULL
+            updated_at INTEGER NOT NULL,
+            revision INTEGER NOT NULL DEFAULT 0
         );",
     )?;
+    // Upgrade v0.1 databases in place without resetting any subscriptions.
+    let mut columns = db.prepare("PRAGMA table_info(subscriptions)")?;
+    let has_revision = columns.query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .iter().any(|column| column == "revision");
+    drop(columns);
+    if !has_revision {
+        db.execute_batch("ALTER TABLE subscriptions ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;")?;
+    }
     crate::templates::initialize(&db)?;
     crate::schedule::initialize(&db)?;
     crate::filter::initialize(&db)?;
@@ -86,11 +98,12 @@ fn parse_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Subscription> {
         nodes_yaml: row.get(6)?,
         last_error: row.get(7)?,
         updated_at: row.get(8)?,
+        revision: row.get(9)?,
     })
 }
 
 const SELECT: &str = "SELECT id, name, token, sources_json, manual_yaml, rules_text,
-                             nodes_yaml, last_error, updated_at FROM subscriptions";
+                             nodes_yaml, last_error, updated_at, revision FROM subscriptions";
 
 pub fn list(db: &Connection) -> rusqlite::Result<Vec<Subscription>> {
     let mut stmt = db.prepare(&format!("{SELECT} ORDER BY updated_at DESC, id"))?;
@@ -124,7 +137,7 @@ pub fn update(db: &Connection, id: &str, input: SubscriptionInput) -> rusqlite::
              rules_text=?5,
              nodes_yaml=CASE WHEN sources_json=?3 THEN nodes_yaml ELSE '' END,
              last_error=CASE WHEN sources_json=?3 THEN last_error ELSE '' END,
-             updated_at=?6 WHERE id=?1",
+             updated_at=?6, revision=revision+1 WHERE id=?1",
         params![id, input.name, serde_json::to_string(&input.source_urls).unwrap(),
                 input.manual_yaml, input.rules_text, now()],
     )? != 0)
@@ -137,16 +150,19 @@ pub fn save_refresh(db: &Connection, id: &str, nodes_yaml: &str, error: &str) ->
 }
 
 
-/// Update only if sources have not changed during an asynchronous refresh.
-/// This avoids resurrecting old provider nodes after a subscription edit.
-pub fn save_refresh_if_sources(db:&Connection,id:&str,expected:&[String],
-        nodes_yaml:&str,error:&str)->rusqlite::Result<bool>{
-    let sources_json=serde_json::to_string(expected).map_err(|e|
-        rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+/// Compare-and-swap the entire profile revision, not just its source URLs.
+/// A second refresh with the same source list and even a same-second edit
+/// must not overwrite a fresher snapshot.
+pub fn save_refresh_if_revision(
+    db: &Connection, id: &str, expected_revision: i64,
+    nodes_yaml: &str, error: &str,
+) -> rusqlite::Result<bool> {
     Ok(db.execute(
-        "UPDATE subscriptions SET nodes_yaml=?2,last_error=?3,updated_at=?4
-         WHERE id=?1 AND sources_json=?5",
-        params![id,nodes_yaml,error,now(),sources_json])?!=0)
+        "UPDATE subscriptions SET nodes_yaml=?3,last_error=?4,updated_at=?5,
+         revision=revision+1
+         WHERE id=?1 AND revision=?2",
+        params![id,expected_revision,nodes_yaml,error,now()]
+    )? == 1)
 }
 
 pub fn delete(db: &Connection, id: &str) -> rusqlite::Result<bool> {
@@ -154,7 +170,7 @@ pub fn delete(db: &Connection, id: &str) -> rusqlite::Result<bool> {
 }
 
 pub fn rotate(db: &Connection, id: &str) -> rusqlite::Result<bool> {
-    Ok(db.execute("UPDATE subscriptions SET token=?2, updated_at=?3 WHERE id=?1",
+    Ok(db.execute("UPDATE subscriptions SET token=?2, updated_at=?3, revision=revision+1 WHERE id=?1",
         params![id, random_token(), now()])? != 0)
 }
 
@@ -183,6 +199,17 @@ mod tests {
         assert_eq!(by_id(&db, &sub.id).unwrap().unwrap().nodes_yaml, "");
         save_refresh(&db, &sub.id, "proxies: []", "").unwrap();
         assert!(by_id(&db, &sub.id).unwrap().unwrap().nodes_yaml.contains("proxies"));
+        let before = by_id(&db,&sub.id).unwrap().unwrap();
+        assert!(save_refresh_if_revision(&db,&sub.id,before.revision,"- {name: Fresh}", "").unwrap());
+        assert!(!save_refresh_if_revision(&db,&sub.id,before.revision,"- {name: Stale}", "").unwrap());
+        assert!(by_id(&db,&sub.id).unwrap().unwrap().nodes_yaml.contains("Fresh"));
+        let before_edit = by_id(&db,&sub.id).unwrap().unwrap();
+        update(&db,&sub.id,SubscriptionInput {
+            name:"Edited".into(),source_urls:before_edit.source_urls.clone(),
+            manual_yaml:"dns:\n  enable: false".into(),rules_text:"MATCH,DIRECT".into()
+        }).unwrap();
+        assert!(!save_refresh_if_revision(&db,&sub.id,before_edit.revision,"- {name: Race}", "").unwrap());
+        assert!(by_id(&db,&sub.id).unwrap().unwrap().nodes_yaml.contains("Fresh"));
         rotate(&db, &sub.id).unwrap();
         assert!(by_token(&db, &sub.token).unwrap().is_none());
         assert!(delete(&db, &sub.id).unwrap());

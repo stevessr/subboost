@@ -208,8 +208,8 @@ pub(crate) async fn refresh_profile(state:&State,id:&str) -> Result<store::Subsc
                         u.host_str().unwrap_or("source").to_owned())
                         .unwrap_or_else(|_|"source".into()));
                 let db=lock(state)?;
-                let persisted=sql(store::save_refresh_if_sources(&db,id,
-                    &original.source_urls,&original.nodes_yaml,&message))?;
+                let persisted=sql(store::save_refresh_if_revision(&db,id,
+                    original.revision,&original.nodes_yaml,&message))?;
                 if !persisted {
                     return Err(error(StatusCode::CONFLICT,"Sources changed during refresh"));
                 }
@@ -221,7 +221,7 @@ pub(crate) async fn refresh_profile(state:&State,id:&str) -> Result<store::Subsc
     let nodes=parser::validate_nodes(nodes).map_err(bad)?;
     let yaml=serde_yaml::to_string(&nodes).map_err(bad)?;
     let db=lock(state)?;
-    if !sql(store::save_refresh_if_sources(&db,id,&original.source_urls,&yaml,""))? {
+    if !sql(store::save_refresh_if_revision(&db,id,original.revision,&yaml,""))? {
         return Err(error(StatusCode::CONFLICT,"Sources changed during refresh"));
     }
     sql(schedule::complete(&db,id,true))?;
