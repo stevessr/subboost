@@ -21,3 +21,9 @@ input:focus,textarea:focus{border-color:var(--blue);box-shadow:0 0 0 3px #375bc0
 .template-tools label input[type=checkbox]{width:auto;display:inline-block;vertical-align:middle;margin-right:6px}.smallprint{font-size:12px}
 
 #modules-select{width:100%;max-height:240px;padding:8px 10px;overflow:auto;border:1px solid var(--line);border-radius:10px;background:var(--paper);color:var(--text)}#modules-select option{padding:5px 7px;border-radius:6px}#modules-select option:checked{background:var(--blue);color:white}
+
+/* Rule catalog search keeps its results inside the profile editor on small screens. */
+.rule-results{display:flex;flex-direction:column;gap:6px;max-height:240px;overflow:auto}
+.rule-result{text-align:left;display:flex;flex-direction:column;align-items:flex-start;gap:3px;min-width:0}
+.rule-result strong,.rule-result small{max-width:100%;overflow-wrap:anywhere}
+.rule-result small{opacity:.72;font-size:.78rem}
