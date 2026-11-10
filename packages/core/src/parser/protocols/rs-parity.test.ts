@@ -1,12 +1,13 @@
 import { describe, expect, it } from "vitest";
 import fixtures from "../../../../../rusted/data/uri-parity-fixtures.json";
 import { parseTrojan } from "./trojan";
+import { parseSS } from "./ss";
 import { parseVLESS } from "./vless";
 
 type Node = Record<string, unknown>;
 function projection(node: Node): Record<string, unknown> {
   const result: Record<string, unknown> = {};
-  for (const name of ["name", "type", "server", "port", "network"]) {
+  for (const name of ["name", "type", "server", "port", "network", "cipher", "password"]) {
     if (node[name] !== undefined) result[name] = node[name];
   }
   const ws = node["ws-opts"] as Record<string, unknown> | undefined;
@@ -27,7 +28,9 @@ describe("upstream URI parity contract shared with Rust", () => {
     it(fixture.id, () => {
       const node = fixture.uri.startsWith("vless://")
         ? parseVLESS(fixture.uri)
-        : parseTrojan(fixture.uri);
+        : fixture.uri.startsWith("ss://")
+          ? parseSS(fixture.uri)
+          : parseTrojan(fixture.uri);
       expect(projection(node as unknown as Node)).toEqual(fixture.expected);
     });
   }
