@@ -340,7 +340,7 @@ mod tests {
             let uri = fixture["uri"].as_str().unwrap();
             let node = parse_uri(uri).unwrap_or_else(|err| panic!("{}: {err}", fixture["id"]));
             let mut actual = serde_json::Map::new();
-            for key in ["name", "type", "server", "port", "network"] {
+            for key in ["name", "type", "server", "port", "network", "cipher", "password"] {
                 if let Some(value) = node.get(key) {
                     actual.insert(key.into(), serde_json::to_value(value).unwrap());
                 }
