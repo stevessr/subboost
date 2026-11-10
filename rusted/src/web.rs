@@ -684,6 +684,54 @@ mod tests {
         }
     }
     #[tokio::test]
+    async fn node_alias_api_persists_and_affects_public_config_export() {
+        let db=store::open(std::path::Path::new(":memory:")).unwrap();
+        let sub=store::create(&db,store::SubscriptionInput{
+            name:"Renaming".into(),source_urls:vec![],
+            manual_yaml:"proxies:\n  - {name: Original, type: ss, server: edge.example.org, port: 8388, cipher: aes-128-gcm, password: secret}\n".into(),
+            rules_text:String::new()
+        }).unwrap();
+        let app=router(State{
+            db:std::sync::Arc::new(std::sync::Mutex::new(db)),
+            admin_token:std::sync::Arc::new("x".repeat(43)),
+            client:reqwest::Client::new()
+        });
+        let token=format!("Bearer {}","x".repeat(43));
+        let uri=format!("/api/subscriptions/{}/nodes",sub.id);
+        let response=app.clone().oneshot(Request::builder().uri(&uri)
+            .header("Authorization",&token).body(Body::empty()).unwrap())
+            .await.unwrap();
+        assert_eq!(response.status(),StatusCode::OK);
+        let bytes=axum::body::to_bytes(response.into_body(),1024*1024).await.unwrap();
+        let nodes:JsonValue=serde_json::from_slice(&bytes).unwrap();
+        let hash=nodes[0]["key"].as_str().unwrap();
+        assert_eq!(hash.len(),64);
+        assert!(nodes[0].get("password").is_none());
+        let uri=format!("/api/subscriptions/{}/node-aliases/{}",sub.id,hash);
+        let result=app.clone().oneshot(Request::builder().uri(&uri).method("PUT")
+            .header("Authorization",&token).header("Content-Type","application/json")
+            .body(Body::from(r#"{"name":"Renamed"}"#)).unwrap())
+            .await.unwrap();
+        assert_eq!(result.status(),StatusCode::OK);
+        let output=app.clone().oneshot(Request::builder()
+            .uri(format!("/api/subscriptions/{}/config.yaml?target=mihomo",sub.token))
+            .body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(output.status(),StatusCode::OK);
+        let bytes=axum::body::to_bytes(output.into_body(),1024*1024).await.unwrap();
+        let config:serde_yaml::Value=serde_yaml::from_slice(&bytes).unwrap();
+        assert_eq!(config["proxies"][0]["name"].as_str(),Some("Renamed"));
+        assert_eq!(config["proxy-groups"][0]["proxies"][1].as_str(),Some("Renamed"));
+        let result=app.clone().oneshot(Request::builder().uri(&uri).method("DELETE")
+            .header("Authorization",&token).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(result.status(),StatusCode::OK);
+        let output=app.oneshot(Request::builder()
+            .uri(format!("/api/subscriptions/{}/config.yaml?target=mihomo",sub.token))
+            .body(Body::empty()).unwrap()).await.unwrap();
+        let bytes=axum::body::to_bytes(output.into_body(),1024*1024).await.unwrap();
+        let config:serde_yaml::Value=serde_yaml::from_slice(&bytes).unwrap();
+        assert_eq!(config["proxies"][0]["name"].as_str(),Some("Original"));
+    }
+    #[tokio::test]
     async fn portable_template_export_and_import_require_admin() {
         let db=store::open(std::path::Path::new(":memory:")).unwrap();
         let template=templates::create(&db,templates::TemplateInput {
