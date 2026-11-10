@@ -331,6 +331,41 @@ pub fn parse_document(body: &str) -> Result<Vec<Value>, String> {
 mod tests {
     use super::*;
     #[test]
+    fn shared_upstream_uri_contract() {
+        let fixtures: serde_json::Value = serde_json::from_str(
+            include_str!("../data/uri-parity-fixtures.json")).unwrap();
+        for fixture in fixtures.as_array().unwrap() {
+            let uri = fixture["uri"].as_str().unwrap();
+            let node = parse_uri(uri).unwrap_or_else(|err| panic!("{}: {err}", fixture["id"]));
+            let mut actual = serde_json::Map::new();
+            for key in ["name", "type", "server", "port", "network"] {
+                if let Some(value) = node.get(key) {
+                    actual.insert(key.into(), serde_json::to_value(value).unwrap());
+                }
+            }
+            if let Some(ws) = node.get("ws-opts") {
+                for (source, target) in [
+                    ("path", "ws_path"),
+                    ("max-early-data", "ws_early_data"),
+                    ("early-data-header-name", "ws_header"),
+                ] {
+                    if let Some(value) = ws.get(source) {
+                        actual.insert(target.into(), serde_json::to_value(value).unwrap());
+                    }
+                }
+                if let Some(host) = ws.get("headers").and_then(|headers| headers.get("Host")) {
+                    actual.insert("ws_host".into(), serde_json::to_value(host).unwrap());
+                }
+            }
+            if let Some(service) = node.get("grpc-opts")
+                .and_then(|grpc| grpc.get("grpc-service-name")) {
+                actual.insert("grpc_service".into(), serde_json::to_value(service).unwrap());
+            }
+            assert_eq!(serde_json::Value::Object(actual), fixture["expected"],
+                "Parity mismatch for {}", fixture["id"]);
+        }
+    }
+    #[test]
     fn parses_clash_yaml_and_renames_duplicate_proxies() {
         let content = "proxies:\n  - {name: One, type: ss, server: example.org, port: 8388, cipher: aes-128-gcm, password: pass}\n  - {name: One, type: ss, server: example.net, port: 443, cipher: aes-128-gcm, password: pass}\n";
         let parsed = parse_document(content).unwrap();
