@@ -83,5 +83,23 @@
       "udp": true,
       "client-fingerprint": "chrome"
     }
+  },
+  {
+    "id": "ss-sip002-obfs-udp-tfo",
+    "uri": "ss://aes-128-gcm:pass@example.org:443?plugin=obfs-local%3Bobfs%3Dtls%3Bobfs-host%3Dcdn.example.org&uot=1&tfo=yes#SS",
+    "expected": {
+      "name": "SS",
+      "type": "ss",
+      "server": "example.org",
+      "port": 443,
+      "cipher": "aes-128-gcm",
+      "password": "pass",
+      "udp": true,
+      "plugin": "obfs",
+      "plugin_mode": "tls",
+      "plugin_host": "cdn.example.org",
+      "udp_over_tcp": true,
+      "tfo": true
+    }
   }
 ]
