@@ -74,8 +74,12 @@ pub fn validate_alias(key:&str,name:&str)->Result<(),String>{
     if key.len()!=64||!key.bytes().all(|c|c.is_ascii_hexdigit()){
         return Err("Node identity must be a SHA-256 hex key".into());
     }
-    if name.trim().is_empty()||name.len()>128{
-        return Err("Node alias name must be between 1 and 128 bytes".into());
+    let trimmed=name.trim();
+    if trimmed.is_empty()||name.len()>128||name.chars().any(char::is_control){
+        return Err("Node alias name must be 1-128 bytes with no control characters".into());
+    }
+    if matches!(trimmed,"DIRECT"|"REJECT"|"Proxy"|"Auto"){
+        return Err("Node alias conflicts with a built-in policy target".into());
     }
     Ok(())
 }
@@ -129,6 +133,9 @@ mod tests {
         ).unwrap();
         let key=hash(&profile.id,&node).unwrap();
         validate_alias(&key,"Changed").unwrap();
+        assert!(validate_alias(&key,"DIRECT").is_err());
+        assert!(validate_alias(&key,"bad\nline").is_err());
+        assert!(validate_alias("bad","Changed").is_err());
         assert!(put_alias(&db,&profile.id,&key,"Changed").unwrap());
         let result=apply(vec![node.clone()],&profile.id,
             &aliases(&db,&profile.id).unwrap()).unwrap();
