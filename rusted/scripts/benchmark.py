@@ -44,7 +44,7 @@ def request(base, path, *, method="GET", body=None, token=None):
     return raw, (time.perf_counter() - start) * 1000
 
 
-def run(binary, count=1000, port=38649):
+def run(binary, count=1000, port=38649, module_preset="none"):
     binary = Path(binary).resolve()
     if not binary.is_file():
         raise FileNotFoundError(binary)
@@ -81,6 +81,18 @@ def run(binary, count=1000, port=38649):
                         "rules_text": "DOMAIN-SUFFIX,example.org,DIRECT\nMATCH,Proxy"}
                 raw, _ = request(base, "/api/subscriptions", method="POST", body=body, token=token)
                 subscription = json.loads(raw)
+                selected_modules = []
+                if module_preset != "none":
+                    catalog, _ = request(base, "/api/modules", token=token)
+                    modules = json.loads(catalog)
+                    if module_preset == "full":
+                        excluded = {"adult", "gemini", "google-scholar"}
+                        selected_modules = [m["id"] for m in modules if m["id"] not in excluded]
+                    else:
+                        selected_modules = ["select","auto","ad","private","cn","global",
+                            "ai","youtube","google","microsoft","apple","github","telegram","final"]
+                    request(base, "/api/subscriptions/" + subscription["id"] + "/modules",
+                            method="PUT", body={"enabled":selected_modules}, token=token)
                 times = []
                 lengths = []
                 for _ in range(25):
@@ -97,6 +109,8 @@ def run(binary, count=1000, port=38649):
                     "kernel": platform.release(),
                     "binary_bytes": binary.stat().st_size,
                     "node_count": count,
+                    "module_preset": module_preset,
+                    "module_count": len(selected_modules),
                     "response_bytes": min(lengths),
                     "idle": idle, "loaded": loaded,
                     "latency_ms": {
@@ -121,11 +135,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--nodes", type=int, default=1000)
+    parser.add_argument("--modules", choices=["none", "standard", "full"], default="none")
     parser.add_argument("--out", type=Path)
     args = parser.parse_args()
     if not 1 <= args.nodes <= 3000:
         parser.error("--nodes must be 1..3000")
-    result = run(args.binary, count=args.nodes)
+    result = run(args.binary, count=args.nodes, module_preset=args.modules)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
