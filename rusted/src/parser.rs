@@ -18,7 +18,7 @@ fn decode_base64(input: &str) -> Option<Vec<u8>> {
 }
 
 fn fragment_name(url: &Url, fallback: &str) -> String {
-    url.fragment().filter(|s| !s.is_empty()).unwrap_or(fallback).to_owned()
+    url.fragment().filter(|s| !s.is_empty()).map(|s| percent_encoding::percent_decode_str(s).decode_utf8_lossy().to_string()).unwrap_or_else(|| fallback.to_owned())
 }
 
 fn endpoint(url: &Url) -> Result<(String, u16), String> {
@@ -126,11 +126,16 @@ fn tls_options(url: &Url, proxy: &mut serde_json::Value) {
 fn parse_trojan(raw: &str) -> Result<Value, String> {
     let url = Url::parse(raw).map_err(|e| e.to_string())?;
     let (server, port) = endpoint(&url)?;
-    if url.username().is_empty() { return Err("Missing Trojan password".into()); }
+    let password = match url.password() {
+        Some(suffix) => format!("{}:{}", url.username(), suffix),
+        None => url.username().to_owned(),
+    };
+    let password = percent_encoding::percent_decode_str(&password).decode_utf8_lossy().to_string();
+    if password.is_empty() { return Err("Missing Trojan password".into()); }
     let network = query_param(&url, "type").unwrap_or_else(|| "tcp".into());
     let mut proxy = serde_json::json!({
         "name": fragment_name(&url, &server), "type": "trojan", "server": server,
-        "port": port, "password": url.username(), "tls": true,
+        "port": port, "password": password, "tls": true,
     });
     if let Some(sni) = query_param(&url, "sni") { proxy["sni"] = serde_json::json!(sni); }
     tls_options(&url, &mut proxy);
@@ -307,6 +312,14 @@ mod tests {
         assert_eq!(parsed["client-fingerprint"].as_str(),Some("chrome"));
         assert_eq!(parsed["alpn"].as_sequence().unwrap().len(),2);
         assert!(parse_uri("vless://uuid@example.org:443?security=reality").is_err());
+    }
+    #[test]
+    fn percent_encoded_trojan_password_and_chinese_name() {
+        let parsed=parse_uri("trojan://a%3Ab@example.org:443#%E6%B5%8B%E8%AF%95").unwrap();
+        assert_eq!(parsed["password"].as_str(),Some("a:b"));
+        assert_eq!(parsed["name"].as_str(),Some("测试"));
+        let parsed=parse_uri("trojan://first:second@example.org:443").unwrap();
+        assert_eq!(parsed["password"].as_str(),Some("first:second"));
     }
     #[test]
     fn trojan_websocket_transport_and_unsupported_transport() {
