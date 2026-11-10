@@ -84,9 +84,23 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
         subscription_id TEXT NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
         source_hash TEXT NOT NULL,
         nodes_yaml TEXT NOT NULL,
+        info_json TEXT NOT NULL DEFAULT '{}',
         fetched_at INTEGER NOT NULL,
         PRIMARY KEY(subscription_id,source_hash)
+    );
+    CREATE TABLE IF NOT EXISTS subscription_info(
+        subscription_id TEXT PRIMARY KEY REFERENCES subscriptions(id) ON DELETE CASCADE,
+        info_json TEXT NOT NULL DEFAULT '{}'
     );")?;
+    // Keep developer databases created with the earlier per-source cache schema.
+    let mut columns=db.prepare("PRAGMA table_info(subscription_source_cache)")?;
+    let has_info=columns.query_map([],|row|row.get::<_,String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?.iter()
+        .any(|name|name=="info_json");
+    drop(columns);
+    if !has_info {
+        db.execute_batch("ALTER TABLE subscription_source_cache ADD COLUMN info_json TEXT NOT NULL DEFAULT '{}';")?;
+    }
     Ok(db)
 }
 
@@ -158,6 +172,7 @@ pub fn update(db: &Connection, id: &str, input: SubscriptionInput) -> rusqlite::
     if changed && previous!=sources_json {
         // Removed or replaced URLs must not leave stale node caches behind.
         tx.execute("DELETE FROM subscription_source_cache WHERE subscription_id=?1",params![id])?;
+        tx.execute("DELETE FROM subscription_info WHERE subscription_id=?1",params![id])?;
     }
     tx.commit()?;
     Ok(changed)
@@ -185,12 +200,39 @@ pub fn source_nodes(db:&Connection, id:&str, source:&str)->rusqlite::Result<Opti
     ).optional()
 }
 
+pub fn source_info(
+    db:&Connection,id:&str,source:&str
+)->rusqlite::Result<crate::metadata::SubscriptionInfo>{
+    let raw:Option<String>=db.query_row(
+        "SELECT info_json FROM subscription_source_cache
+         WHERE subscription_id=?1 AND source_hash=?2",
+        params![id,source_hash(source)],|row|row.get(0)
+    ).optional()?;
+    raw.map(|v|serde_json::from_str(&v).map_err(|e|
+        rusqlite::Error::ToSqlConversionFailure(Box::new(e))))
+        .transpose().map(|v|v.unwrap_or_default())
+}
+
+pub fn info(
+    db:&Connection,id:&str
+)->rusqlite::Result<crate::metadata::SubscriptionInfo>{
+    let raw:Option<String>=db.query_row(
+        "SELECT info_json FROM subscription_info WHERE subscription_id=?1",
+        params![id],|row|row.get(0)
+    ).optional()?;
+    raw.map(|v|serde_json::from_str(&v).map_err(|e|
+        rusqlite::Error::ToSqlConversionFailure(Box::new(e))))
+        .transpose().map(|v|v.unwrap_or_default())
+}
+
 /// Atomically commit a complete profile snapshot AND any successful source
 /// cache updates, guarded by the revision. A rejected stale refresh does
 /// not modify the aggregate, error state, source cache or revision.
 pub fn commit_refresh_if_revision(
     db:&Connection,id:&str,revision:i64,
-    nodes_yaml:&str,error:&str,updates:&[(String,String)]
+    nodes_yaml:&str,error:&str,
+    updates:&[(String,String,crate::metadata::SubscriptionInfo)],
+    aggregate:Option<&crate::metadata::SubscriptionInfo>
 )->rusqlite::Result<bool>{
     let transaction=db.unchecked_transaction()?;
     let applied=transaction.execute(
@@ -199,15 +241,27 @@ pub fn commit_refresh_if_revision(
          WHERE id=?1 AND revision=?2",
         params![id,revision,nodes_yaml,error,now()])?==1;
     if !applied {transaction.rollback()?;return Ok(false);}
-    for (source,yaml) in updates {
+    for (source,yaml,metadata) in updates {
+        let json=serde_json::to_string(metadata).map_err(|e|
+            rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
         transaction.execute(
             "INSERT INTO subscription_source_cache
-             (subscription_id,source_hash,nodes_yaml,fetched_at)
-             VALUES (?1,?2,?3,?4)
+             (subscription_id,source_hash,nodes_yaml,info_json,fetched_at)
+             VALUES (?1,?2,?3,?4,?5)
              ON CONFLICT(subscription_id,source_hash)
              DO UPDATE SET nodes_yaml=excluded.nodes_yaml,
-             fetched_at=excluded.fetched_at",
-            params![id,source_hash(source),yaml,now()]
+             info_json=excluded.info_json,fetched_at=excluded.fetched_at",
+            params![id,source_hash(source),yaml,json,now()]
+        )?;
+    }
+    if let Some(metadata)=aggregate {
+        let json=serde_json::to_string(metadata).map_err(|e|
+            rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        transaction.execute(
+            "INSERT INTO subscription_info(subscription_id,info_json)
+             VALUES(?1,?2) ON CONFLICT(subscription_id)
+             DO UPDATE SET info_json=excluded.info_json",
+            params![id,json]
         )?;
     }
     transaction.commit()?;
@@ -221,7 +275,7 @@ pub fn save_refresh_if_revision(
     db: &Connection, id: &str, expected_revision: i64,
     nodes_yaml: &str, error: &str,
 ) -> rusqlite::Result<bool> {
-    commit_refresh_if_revision(db,id,expected_revision,nodes_yaml,error,&[])
+    commit_refresh_if_revision(db,id,expected_revision,nodes_yaml,error,&[],None)
 }
 
 pub fn delete(db: &Connection, id: &str) -> rusqlite::Result<bool> {
@@ -264,14 +318,19 @@ mod tests {
         assert!(by_id(&db,&sub.id).unwrap().unwrap().nodes_yaml.contains("Fresh"));
         let before_cache=by_id(&db,&sub.id).unwrap().unwrap();
         let cached_url=before_cache.source_urls[0].clone();
+        let metadata=crate::metadata::SubscriptionInfo::parse("upload=1024; total=8192");
         assert!(commit_refresh_if_revision(&db,&sub.id,before_cache.revision,
             "- {name: Live}","",
-            &[(cached_url.clone(),"- {name: Source}".into())]).unwrap());
+            &[(cached_url.clone(),"- {name: Source}".into(),metadata.clone())],
+            Some(&metadata)).unwrap());
+        assert_eq!(info(&db,&sub.id).unwrap().upload,Some(1024));
+        assert_eq!(source_info(&db,&sub.id,&cached_url).unwrap().total,Some(8192));
         assert_eq!(source_nodes(&db,&sub.id,&cached_url).unwrap().as_deref(),
             Some("- {name: Source}"));
         assert!(!commit_refresh_if_revision(&db,&sub.id,before_cache.revision,
             "- {name: Stale}","",
-            &[(cached_url.clone(),"- {name: Old}".into())]).unwrap());
+            &[(cached_url.clone(),"- {name: Old}".into(),
+               crate::metadata::SubscriptionInfo::default())],None).unwrap());
         assert_eq!(source_nodes(&db,&sub.id,&cached_url).unwrap().as_deref(),
             Some("- {name: Source}"));
         let before_edit = by_id(&db,&sub.id).unwrap().unwrap();
@@ -288,6 +347,7 @@ mod tests {
             manual_yaml:latest.manual_yaml.clone(),rules_text:latest.rules_text.clone(),
         }).unwrap();
         assert!(source_nodes(&db,&sub.id,&cached_url).unwrap().is_none());
+        assert_eq!(info(&db,&sub.id).unwrap().upload,None);
         rotate(&db, &sub.id).unwrap();
         assert!(by_token(&db, &sub.token).unwrap().is_none());
         assert!(delete(&db, &sub.id).unwrap());
