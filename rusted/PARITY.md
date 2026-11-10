@@ -79,3 +79,11 @@ The shared URI fixture corpus currently includes six cases spanning VLESS
 WebSocket, Trojan WebSocket, VLESS gRPC, SS plaintext credentials, SS SIP002
 encoded credentials and VLESS Reality defaults. Passing these fixtures alone
 must not be treated as full protocol or product equivalence.
+
+## SIP002 plugin compatibility batch
+
+The shared fixture corpus now includes seven test cases, including
+SIP002 obfs-local normalization with host/mode and UDP-over-TCP/TFO flags.
+The Rust URI parser additionally accepts empty boolean query values and bare
+plugin keys like the original TypeScript parser. These changes are committed,
+but CI verification is still pending; do not mark protocol parity complete.
