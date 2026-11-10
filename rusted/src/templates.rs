@@ -16,6 +16,35 @@ pub struct Template {
     pub updated_at: i64,
 }
 
+/// Portable native template format. IDs and timestamps are deliberately
+/// excluded: an import creates a new local SQLite record.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PortableTemplate {
+    pub format: String,
+    pub version: u32,
+    pub name: String,
+    pub description: String,
+    pub manual_yaml: String,
+    pub rules_text: String,
+}
+impl PortableTemplate {
+    pub fn from_template(template: &Template) -> Self {
+        Self { format: "subboost-rs-template".into(), version: 1,
+            name: template.name.clone(), description: template.description.clone(),
+            manual_yaml: template.manual_yaml.clone(), rules_text: template.rules_text.clone() }
+    }
+    pub fn into_input(self) -> Result<TemplateInput, String> {
+        if self.format != "subboost-rs-template" || self.version != 1 {
+            return Err("Unsupported template format or version".into());
+        }
+        Ok(TemplateInput {
+            name: self.name, description: self.description,
+            manual_yaml: self.manual_yaml, rules_text: self.rules_text,
+        })
+    }
+}
+
 #[derive(Deserialize, Serialize)]
 pub struct TemplateInput {
     pub name: String,
@@ -116,6 +145,26 @@ pub fn delete(db: &Connection, id: &str) -> rusqlite::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn portable_template_round_trip_creates_a_fresh_identity() {
+        let db=Connection::open_in_memory().unwrap();
+        initialize(&db).unwrap();
+        let original=create(&db,TemplateInput {
+            name:"Exported".into(),description:"portable".into(),
+            manual_yaml:"dns:\n  enable: true".into(),
+            rules_text:"MATCH,DIRECT".into(),
+        }).unwrap();
+        let payload=PortableTemplate::from_template(&original);
+        let serialized=serde_json::to_string(&payload).unwrap();
+        let parsed:PortableTemplate=serde_json::from_str(&serialized).unwrap();
+        let imported=create(&db,parsed.into_input().unwrap()).unwrap();
+        assert_ne!(original.id,imported.id);
+        assert_eq!(original.manual_yaml,imported.manual_yaml);
+        assert_eq!(original.rules_text,imported.rules_text);
+        let mut unsupported=PortableTemplate::from_template(&original);
+        unsupported.version=9;
+        assert!(unsupported.into_input().is_err());
+    }
     #[test]
     fn templates_are_persistent_and_builtins_immutable() {
         let db=Connection::open_in_memory().unwrap();

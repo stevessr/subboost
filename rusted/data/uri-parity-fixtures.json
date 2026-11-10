@@ -1,0 +1,298 @@
+[
+  {
+    "id": "vless-websocket-early-data",
+    "uri": "vless://11111111-1111-4111-8111-111111111111@edge.example.org:443?security=tls&type=ws&path=%2Fchat%3Fed%3D2048%26foo%3D1&host=cdn.example.org#VLESS-WS",
+    "expected": {
+      "name": "VLESS-WS",
+      "type": "vless",
+      "server": "edge.example.org",
+      "port": 443,
+      "network": "ws",
+      "ws_path": "/chat?foo=1",
+      "ws_early_data": 2048,
+      "ws_header": "Sec-WebSocket-Protocol",
+      "ws_host": "cdn.example.org",
+      "udp": true
+    }
+  },
+  {
+    "id": "trojan-websocket-early-data",
+    "uri": "trojan://secret@example.org:443?type=ws&path=%2Fstream%3Fed%3D512%26v%3D2&host=www.example.org#Trojan-WS",
+    "expected": {
+      "name": "Trojan-WS",
+      "type": "trojan",
+      "server": "example.org",
+      "port": 443,
+      "network": "ws",
+      "ws_path": "/stream?v=2",
+      "ws_early_data": 512,
+      "ws_header": "Sec-WebSocket-Protocol",
+      "ws_host": "www.example.org",
+      "udp": true,
+      "sni": "example.org"
+    }
+  },
+  {
+    "id": "vless-grpc-service",
+    "uri": "vless://11111111-1111-4111-8111-111111111111@grpc.example.org:443?security=tls&type=grpc&serviceName=service%2Fone#VLESS-GRPC",
+    "expected": {
+      "name": "VLESS-GRPC",
+      "type": "vless",
+      "server": "grpc.example.org",
+      "port": 443,
+      "network": "grpc",
+      "grpc_service": "service/one",
+      "udp": true
+    }
+  },
+  {
+    "id": "ss-plaintext-colon-password",
+    "uri": "ss://aes-128-gcm:hello%3Aworld@example.org:8388#%E6%B5%8B%E8%AF%95",
+    "expected": {
+      "name": "测试",
+      "type": "ss",
+      "server": "example.org",
+      "port": 8388,
+      "cipher": "aes-128-gcm",
+      "password": "hello:world",
+      "udp": true
+    }
+  },
+  {
+    "id": "ss-sip002-percent-encoded-padding",
+    "uri": "ss://YWVzLTI1Ni1nY206c2VjcmV0IQ%3D%3D@example.org:443#SIP002",
+    "expected": {
+      "name": "SIP002",
+      "type": "ss",
+      "server": "example.org",
+      "port": 443,
+      "cipher": "aes-256-gcm",
+      "password": "secret!",
+      "udp": true
+    }
+  },
+  {
+    "id": "vless-reality-default-fingerprint",
+    "uri": "vless://11111111-1111-4111-8111-111111111111@reality.example.org:443?security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=abcd&type=tcp#Reality",
+    "expected": {
+      "name": "Reality",
+      "type": "vless",
+      "server": "reality.example.org",
+      "port": 443,
+      "network": "tcp",
+      "udp": true,
+      "client-fingerprint": "chrome"
+    }
+  },
+  {
+    "id": "ss-sip002-obfs-udp-tfo",
+    "uri": "ss://aes-128-gcm:pass@example.org:443?plugin=obfs-local%3Bobfs%3Dtls%3Bobfs-host%3Dcdn.example.org&uot=1&tfo=yes#SS",
+    "expected": {
+      "name": "SS",
+      "type": "ss",
+      "server": "example.org",
+      "port": 443,
+      "cipher": "aes-128-gcm",
+      "password": "pass",
+      "udp": true,
+      "plugin": "obfs",
+      "plugin_mode": "tls",
+      "plugin_host": "cdn.example.org",
+      "udp_over_tcp": true,
+      "tfo": true
+    }
+  },
+  {
+    "id": "vmess-json-ws-early-data",
+    "uri": "vmess://eyJ2IjoiMiIsInBzIjoiVk1lc3MtV1MiLCJhZGQiOiJ2bWVzcy5leGFtcGxlLm9yZyIsInBvcnQiOiI0NDMiLCJpZCI6IjExMTExMTExLTExMTEtNDExMS04MTExLTExMTExMTExMTExMSIsImFpZCI6IjAiLCJzY3kiOiJhdXRvIiwibmV0Ijoid3MiLCJwYXRoIjoiL3NvY2tldD9lZD0xMjgmdj0xIiwiaG9zdCI6ImNkbi5leGFtcGxlLm9yZyIsInRscyI6InRscyIsInNuaSI6InRscy5leGFtcGxlLm9yZyIsImFscG4iOiJoMixodHRwLzEuMSIsImZwIjoiY2hyb21lIiwiYWxsb3dJbnNlY3VyZSI6dHJ1ZX0=",
+    "expected": {
+      "name": "VMess-WS",
+      "type": "vmess",
+      "server": "vmess.example.org",
+      "port": 443,
+      "network": "ws",
+      "udp": true,
+      "tls": true,
+      "uuid": "11111111-1111-4111-8111-111111111111",
+      "alterId": 0,
+      "cipher": "auto",
+      "servername": "tls.example.org",
+      "ws_path": "/socket?v=1",
+      "ws_early_data": 128,
+      "ws_header": "Sec-WebSocket-Protocol",
+      "ws_host": "cdn.example.org",
+      "client-fingerprint": "chrome",
+      "skip-cert-verify": true
+    }
+  },
+  {
+    "id": "vmess-json-grpc",
+    "uri": "vmess://eyJ2IjoiMiIsInBzIjoiVk1lc3MtZ1JQQyIsImFkZCI6ImdycGMuZXhhbXBsZS5vcmciLCJwb3J0IjoiNDQzIiwiaWQiOiIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJhaWQiOiI0Iiwic2N5IjoiYXV0byIsIm5ldCI6ImdycGMiLCJwYXRoIjoibXlTZXJ2aWNlIiwic2VydmljZU5hbWUiOiJzZXJ2aWNlL3BhdGgiLCJ0bHMiOiJ0bHMiLCJzbmkiOiJncnBjLmV4YW1wbGUub3JnIn0=",
+    "expected": {
+      "name": "VMess-gRPC",
+      "type": "vmess",
+      "server": "grpc.example.org",
+      "port": 443,
+      "network": "grpc",
+      "udp": true,
+      "tls": true,
+      "uuid": "11111111-1111-4111-8111-111111111111",
+      "alterId": 4,
+      "cipher": "auto",
+      "servername": "grpc.example.org",
+      "grpc_service": "service/path"
+    }
+  },
+  {
+    "id": "vmess-json-http-obfuscation",
+    "uri": "vmess://eyJ2IjoiMiIsInBzIjoiVk1lc3MtSFRUUCIsImFkZCI6Imh0dHAuZXhhbXBsZS5vcmciLCJwb3J0IjoiODA4MCIsImlkIjoiMTExMTExMTEtMTExMS00MTExLTgxMTEtMTExMTExMTExMTExIiwiYWlkIjoiMCIsInNjeSI6ImF1dG8iLCJuZXQiOiJ0Y3AiLCJ0eXBlIjoiaHR0cCIsIm1ldGhvZCI6InBvc3QiLCJwYXRoIjoiL2EsL2IiLCJob3N0IjoiZnJvbnQuZXhhbXBsZS5vcmcsYmFja3VwLmV4YW1wbGUub3JnIn0=",
+    "expected": {
+      "name": "VMess-HTTP",
+      "type": "vmess",
+      "server": "http.example.org",
+      "port": 8080,
+      "network": "http",
+      "udp": true,
+      "tls": false,
+      "uuid": "11111111-1111-4111-8111-111111111111",
+      "alterId": 0,
+      "cipher": "auto",
+      "servername": "front.example.org",
+      "http_method": "POST",
+      "http_paths": [
+        "/a",
+        "/b"
+      ],
+      "http_hosts": [
+        "front.example.org",
+        "backup.example.org"
+      ]
+    }
+  },
+  {
+    "id": "trojan-tcp-peer-sni-default",
+    "uri": "trojan://pass:with%3Acolon@tcp.example.org:443?peer=edge.example.org#Trojan-TCP",
+    "expected": {
+      "name": "Trojan-TCP",
+      "type": "trojan",
+      "server": "tcp.example.org",
+      "port": 443,
+      "network": "tcp",
+      "password": "pass:with:colon",
+      "udp": true,
+      "sni": "edge.example.org"
+    }
+  },
+  {
+    "id": "vmess-uri-grpc",
+    "uri": "vmess://11111111-1111-4111-8111-111111111111@uri.example.org:443?security=tls&type=grpc&serviceName=uri-svc&host=front.example.org&sni=tls.example.org&fp=chrome#VMess-URI",
+    "expected": {
+      "name": "VMess-URI",
+      "type": "vmess",
+      "server": "uri.example.org",
+      "port": 443,
+      "network": "grpc",
+      "udp": true,
+      "tls": true,
+      "uuid": "11111111-1111-4111-8111-111111111111",
+      "alterId": 0,
+      "cipher": "auto",
+      "servername": "tls.example.org",
+      "grpc_service": "uri-svc",
+      "client-fingerprint": "chrome"
+    }
+  },
+  {
+    "id": "vless-shadowrocket-base64-implicit-tls",
+    "uri": "vless://YXV0bzoxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTFAc2hhZG93LmV4YW1wbGUub3JnOjQ0Mw?tls=1&obfs=websocket&host=cdn.example.org&path=%2Fws%3Fed%3D64#Shadowrocket",
+    "expected": {
+      "name": "Shadowrocket",
+      "type": "vless",
+      "server": "shadow.example.org",
+      "port": 443,
+      "network": "ws",
+      "uuid": "11111111-1111-4111-8111-111111111111",
+      "udp": true,
+      "tls": true,
+      "client-fingerprint": "chrome",
+      "ws_path": "/ws",
+      "ws_early_data": 64,
+      "ws_header": "Sec-WebSocket-Protocol",
+      "ws_host": "cdn.example.org"
+    }
+  },
+  {
+    "id": "vless-http-multiple-hosts",
+    "uri": "vless://11111111-1111-4111-8111-111111111111@http.example.org:443?security=tls&type=http&host=front.example.org%2Calt.example.org&path=%2Fa%2C%2Fb&method=post&sni=edge.example.org&allow-insecure=1#HTTP",
+    "expected": {
+      "name": "HTTP",
+      "type": "vless",
+      "server": "http.example.org",
+      "port": 443,
+      "network": "http",
+      "tls": true,
+      "udp": true,
+      "servername": "edge.example.org",
+      "skip-cert-verify": true,
+      "http_method": "POST",
+      "http_paths": [
+        "/a",
+        "/b"
+      ],
+      "http_hosts": [
+        "front.example.org",
+        "alt.example.org"
+      ]
+    }
+  },
+  {
+    "id": "vless-h2-host-list",
+    "uri": "vless://11111111-1111-4111-8111-111111111111@h2.example.org:443?security=tls&type=h2&host=one.example.org%2Ctwo.example.org&path=%2Fmetrics#H2",
+    "expected": {
+      "name": "H2",
+      "type": "vless",
+      "server": "h2.example.org",
+      "port": 443,
+      "network": "h2",
+      "tls": true,
+      "udp": true,
+      "h2_path": "/metrics",
+      "h2_hosts": [
+        "one.example.org",
+        "two.example.org"
+      ]
+    }
+  },
+  {
+    "id": "vless-httpupgrade",
+    "uri": "vless://11111111-1111-4111-8111-111111111111@upgrade.example.org:443?security=tls&type=httpupgrade&host=cdn.example.org&path=%2Fws#Upgrade",
+    "expected": {
+      "name": "Upgrade",
+      "type": "vless",
+      "server": "upgrade.example.org",
+      "port": 443,
+      "network": "ws",
+      "tls": true,
+      "udp": true,
+      "ws_path": "/ws",
+      "ws_host": "cdn.example.org",
+      "ws_upgrade": true
+    }
+  },
+  {
+    "id": "trojan-httpupgrade",
+    "uri": "trojan://secret@upgrade.example.org:443?type=httpupgrade&host=cdn.example.org&path=%2Fupgrade#Upgrade",
+    "expected": {
+      "name": "Upgrade",
+      "type": "trojan",
+      "server": "upgrade.example.org",
+      "port": 443,
+      "network": "ws",
+      "udp": true,
+      "sni": "upgrade.example.org",
+      "ws_path": "/upgrade",
+      "ws_host": "cdn.example.org",
+      "ws_upgrade": true
+    }
+  }
+]

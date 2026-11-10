@@ -263,7 +263,16 @@ fn add_policy_modules(config:&mut Mapping,enabled:&[String])->Result<(),String>{
             trailing.push(rule);
         }else{generated.push(rule);}
     }
-    generated.extend(trailing);
+    if enabled.iter().any(|name|name=="final") {
+        // Upstream generateRules always appends one MATCH pointing at the
+        // enabled final module, after every user/module rule.
+        let final_name=modules::all().iter().find(|m|m.id=="final")
+            .ok_or("Missing final policy module")?.name.clone();
+        generated.push(key(&format!("MATCH,{final_name}")));
+    }else{
+        // No final module selected: retain the user's original fallback.
+        generated.extend(trailing);
+    }
     set(config,"proxy-groups",Value::Sequence(groups));
     set(config,"rule-providers",Value::Mapping(providers));
     set(config,"rules",Value::Sequence(generated));
@@ -279,6 +288,13 @@ pub fn generate_filtered(subscription: &Subscription, target: &str,
 }
 pub fn generate_with_modules(subscription: &Subscription, target: &str,
     name_filter:&crate::filter::NodeNameFilter, enabled_modules:&[String]
+) -> Result<String,String> {
+    generate_with_aliases(subscription,target,name_filter,enabled_modules,
+        &HashMap::new())
+}
+pub fn generate_with_aliases(subscription: &Subscription, target: &str,
+    name_filter:&crate::filter::NodeNameFilter, enabled_modules:&[String],
+    aliases:&HashMap<String,String>
 ) -> Result<String,String> {
     if !matches!(target,"mihomo"|"clash-rs"|"nikki-rs") {
         return Err("Unsupported target (mihomo or clash-rs)".into());
@@ -296,6 +312,9 @@ pub fn generate_with_modules(subscription: &Subscription, target: &str,
             .map_err(|e| format!("Cached proxies: {e}"))?;
         proxies.extend(cached);
     }
+    let proxies = crate::parser::validate_nodes(proxies)?;
+    // Apply profile-scoped smart names before filtering and policy groups.
+    let proxies = crate::identity::apply(proxies,&subscription.id,aliases)?;
     let proxies = crate::parser::validate_nodes(proxies)?;
     let proxies = crate::filter::apply(proxies,name_filter)?;
     // Nikki RS ships clash-rs-minimal, not standard/plus.
@@ -370,6 +389,65 @@ mod tests {
             rules_text:"RULE-SET,cn,DIRECT\n".into(),
             nodes_yaml:"- {name: Node, type: ss, server: example.org, port: 8388, cipher: aes-128-gcm, password: pwd}\n".into(),
             last_error:String::new(),updated_at:0,revision:0}
+    }
+    #[test]
+    fn stable_aliases_update_proxies_and_group_members_without_source_mutation() {
+        let sub=subscription();
+        let node:Value=serde_yaml::from_str(
+            "{name: Node, type: ss, server: example.org, port: 8388, cipher: aes-128-gcm, password: pwd}"
+        ).unwrap();
+        let key=crate::identity::hash(&sub.id,&node).unwrap();
+        let mut aliases=HashMap::new();
+        aliases.insert(key,"HK Premium".into());
+        let yaml=generate_with_aliases(&sub,"mihomo",
+            &crate::filter::NodeNameFilter::default(),&[],&aliases).unwrap();
+        let doc:Value=serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(doc["proxies"][0]["name"].as_str(),Some("HK Premium"));
+        assert_eq!(doc["proxy-groups"][0]["proxies"][1].as_str(),Some("HK Premium"));
+        assert_eq!(doc["proxy-groups"][1]["proxies"][0].as_str(),Some("HK Premium"));
+        assert!(sub.nodes_yaml.contains("name: Node"));
+    }
+    #[test]
+    fn shared_upstream_rule_order_contract() {
+        let fixtures:serde_json::Value=serde_json::from_str(
+            include_str!("../data/rule-parity-fixtures.json")).unwrap();
+        for fixture in fixtures.as_array().unwrap() {
+            let modules:Vec<String>=fixture["enabled_modules"].as_array().unwrap()
+                .iter().map(|m|m.as_str().unwrap().to_owned()).collect();
+            let expected:Vec<String>=fixture["expected_rules"].as_array().unwrap()
+                .iter().map(|r|r.as_str().unwrap().to_owned()).collect();
+            let mut sub=subscription();
+            sub.manual_yaml.clear();
+            sub.rules_text.clear();
+            // The upstream canonical rules are Mihomo names. Clash-rs
+            // intentionally namespaces rule-provider IDs; test that separately.
+            let yaml=generate_with_modules(&sub,"mihomo",
+                &crate::filter::NodeNameFilter::default(),&modules).unwrap();
+            let doc:Value=serde_yaml::from_str(&yaml).unwrap();
+            let rules:Vec<String>=doc["rules"].as_sequence().unwrap()
+                .iter().map(|r|r.as_str().unwrap().to_owned()).collect();
+            assert_eq!(rules,expected,"{}",fixture["id"]);
+        }
+    }
+    #[test]
+    fn enabled_final_module_owns_the_last_match_rule() {
+        let mut sub=subscription();
+        sub.rules_text="DOMAIN,example.org,DIRECT\nMATCH,DIRECT".into();
+        let modules=vec!["select".to_owned(),"final".to_owned()];
+        for target in ["mihomo","clash-rs"] {
+            let yaml=generate_with_modules(
+                &sub,target,&crate::filter::NodeNameFilter::default(),&modules).unwrap();
+            let doc:Value=serde_yaml::from_str(&yaml).unwrap();
+            let rules=doc["rules"].as_sequence().unwrap();
+            let match_rules:Vec<_>=rules.iter().filter_map(Value::as_str)
+                .filter(|r|r.starts_with("MATCH,")).collect();
+            assert_eq!(match_rules,vec!["MATCH,🐟 漏网之鱼"]);
+            assert_eq!(rules.last().and_then(Value::as_str),Some("MATCH,🐟 漏网之鱼"));
+        }
+        let plain=generate(&sub,"mihomo").unwrap();
+        let doc:Value=serde_yaml::from_str(&plain).unwrap();
+        assert_eq!(doc["rules"].as_sequence().unwrap().last()
+            .and_then(Value::as_str),Some("MATCH,DIRECT"));
     }
     #[test]
     fn clash_rs_provider_path_and_rules_are_namespaced() {

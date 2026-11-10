@@ -13,7 +13,10 @@
 <select id="template-select"><option value="">请选择预设或已保存模板</option></select>
 <div class="actions"><button id="apply-template" type="button" class="secondary small">应用模板</button>
 <button id="save-template" type="button" class="secondary small">保存为模板</button>
-<button id="delete-template" type="button" class="danger small">删除模板</button></div>
+<button id="delete-template" type="button" class="danger small">删除模板</button>
+<button id="export-template" type="button" class="secondary small">导出模板 JSON</button>
+<button id="import-template" type="button" class="secondary small">导入模板 JSON</button>
+<input id="import-template-file" type="file" accept=".json,application/json" class="hidden" aria-label="选择 SubBoost RS 模板 JSON 文件"></div>
 </div>
 <div class="template-tools">
 <label for="module-preset">策略组模块（与原版 SubBoost 同步）</label>
@@ -30,6 +33,11 @@
 <button id="save-modules" type="button" class="primary small" disabled>保存模块配置</button>
 </div>
 <p class="muted smallprint">启用后会为所选服务生成对应策略组和 MRS 规则提供者。首次下载规则集将消耗存储空间。</p>
+<label for="rule-query">内置规则库搜索（94 条 MRS 规则）</label>
+<input id="rule-query" type="search" maxlength="128" autocomplete="off" placeholder="搜索规则名称、模块、ID 或 geosite 路径">
+<div id="rule-results" class="rule-results" role="list" aria-live="polite"></div>
+<p class="muted smallprint">选择搜索结果会勾选所属策略组；需点击「保存模块配置」后才会生效。</p>
+
 </div>
 <label for="refresh-interval">定时刷新订阅源</label>
 <select id="refresh-interval" disabled>
@@ -48,6 +56,12 @@
 <label for="node-filter-excludes">排除匹配（每行一个正则表达式）</label>
 <textarea id="node-filter-excludes" rows="2" placeholder="expired|过期"></textarea>
 <button id="save-node-filter" class="secondary small" type="button" disabled>保存筛选条件</button>
+</div>
+<div class="template-tools">
+<label>节点智能重命名（按稳定身份持久化）</label>
+<p class="muted smallprint">重命名会保留原始订阅内容，不受节点显示名称和内部元数据变化影响。</p>
+<div id="node-alias-list" class="rule-results" aria-live="polite"></div>
+<button id="reload-node-aliases" type="button" class="secondary small" disabled>刷新节点列表</button>
 </div>
 <label for="manual">节点 / 自定义 Clash YAML</label><textarea id="manual" rows="9" spellcheck="false" placeholder="proxies:&#10;  - name: Node&#10;    type: ss&#10;    server: example.com&#10;    port: 8388&#10;    cipher: aes-128-gcm&#10;    password: secret"></textarea>
 <label for="rules">自定义规则（每行一条，可留空）</label><textarea id="rules" rows="4" spellcheck="false" placeholder="DOMAIN-SUFFIX,example.com,DIRECT&#10;MATCH,Proxy"></textarea>

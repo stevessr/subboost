@@ -1,4 +1,4 @@
-use crate::{config, filter, metadata, modules, parser, schedule, store, templates, State};
+use crate::{config, filter, identity, metadata, modules, parser, schedule, store, templates, State};
 use axum::{
     body::Body,
     extract::{Path, Query, State as AppState},
@@ -324,7 +324,7 @@ async fn export(AppState(state): AppState<State>,
     if !matches!(target,"mihomo"|"clash-rs"|"nikki-rs") {
         return error(StatusCode::BAD_REQUEST,"Unsupported target").into_response();
     }
-    let (sub,options,subscription_info,refresh_interval,enabled_modules)={
+    let (sub,options,subscription_info,refresh_interval,enabled_modules,aliases)={
         let db=match lock(&state) {Ok(v)=>v,Err(e)=>return e.into_response()};
         let sub=match sql(store::by_token(&db,&token)) {
             Ok(Some(s))=>s,
@@ -347,9 +347,13 @@ async fn export(AppState(state): AppState<State>,
             Ok(v)=>v,
             Err(e)=>return e.into_response(),
         };
-        (sub,options,info,interval,enabled)
+        let aliases=match sql(identity::aliases(&db,&sub.id)){
+            Ok(v)=>v,
+            Err(e)=>return e.into_response(),
+        };
+        (sub,options,info,interval,enabled,aliases)
     };
-    match config::generate_with_modules(&sub,target,&options,&enabled_modules) {
+    match config::generate_with_aliases(&sub,target,&options,&enabled_modules,&aliases) {
         Ok(yaml)=>{
             // Only use percent-encoded RFC 5987 filenames to avoid header
             // injection from user-supplied configuration names.
@@ -409,6 +413,24 @@ async fn templates_create(AppState(state): AppState<State>,headers: HeaderMap,
     let db=lock(&state)?;
     Ok(Json(sql(templates::create(&db,input))?))
 }
+async fn templates_export(AppState(state): AppState<State>,headers:HeaderMap,
+    Path(id):Path<String>) -> ApiResult<templates::PortableTemplate> {
+    authorized(&state,&headers)?;
+    let db=lock(&state)?;
+    let template=sql(templates::get(&db,&id))?
+        .ok_or_else(||error(StatusCode::NOT_FOUND,"Template not found"))?;
+    Ok(Json(templates::PortableTemplate::from_template(&template)))
+}
+
+async fn templates_import(AppState(state): AppState<State>,headers:HeaderMap,
+    Json(payload):Json<templates::PortableTemplate>) -> ApiResult<templates::Template> {
+    authorized(&state,&headers)?;
+    let input=payload.into_input().map_err(bad)?;
+    validate_template(&input)?;
+    let db=lock(&state)?;
+    Ok(Json(sql(templates::create(&db,input))?))
+}
+
 async fn templates_update(AppState(state): AppState<State>,headers: HeaderMap,
     Path(id):Path<String>,Json(input):Json<templates::TemplateInput>)
     -> ApiResult<templates::Template> {
@@ -426,6 +448,123 @@ async fn templates_delete(AppState(state): AppState<State>,headers: HeaderMap,
         return Err(error(StatusCode::NOT_FOUND,"Template not found or built-in"));
     }
     Ok(Json(json!({"deleted":true})))
+}
+
+
+#[derive(Deserialize)]
+struct RuleCatalogQuery {
+    q:Option<String>,
+    limit:Option<usize>,
+}
+
+async fn module_rules_search(
+    AppState(state):AppState<State>, headers:HeaderMap, Query(query):Query<RuleCatalogQuery>
+) -> ApiResult<JsonValue> {
+    authorized(&state,&headers)?;
+    let keyword=query.q.unwrap_or_default().trim().to_lowercase();
+    if keyword.chars().count()>128 {
+        return Err(bad("Rule search keyword too long (max 128 characters)"));
+    }
+    let limit=query.limit.unwrap_or(20).clamp(1,50);
+    let mut items=Vec::new();
+    let mut matched=0usize;
+    for module in modules::all() {
+        for rule in &module.rules {
+            if !keyword.is_empty() && ![
+                module.id.as_str(),module.name.as_str(),rule.id.as_str(),
+                rule.name.as_str(),rule.path.as_str(),rule.behavior.as_str()
+            ].iter().any(|field|field.to_lowercase().contains(&keyword)){
+                continue;
+            }
+            matched+=1;
+            if items.len()<limit {
+                items.push(json!({
+                    "module_id":module.id,"module_name":module.name,
+                    "rule_id":rule.id,"rule_name":rule.name,
+                    "behavior":rule.behavior,"path":rule.path,
+                    "no_resolve":rule.no_resolve
+                }));
+            }
+        }
+    }
+    Ok(Json(json!({"items":items,"total_matched":matched,
+        "total_rules":modules::all().iter().map(|m|m.rules.len()).sum::<usize>()})))
+}
+
+#[derive(Deserialize)]
+struct NodeAliasInput { name:String }
+
+fn profile_nodes(sub:&store::Subscription)->Result<Vec<serde_yaml::Value>,String>{
+    let mut nodes=Vec::new();
+    if !sub.manual_yaml.trim().is_empty() {
+        let document:serde_yaml::Value=serde_yaml::from_str(&sub.manual_yaml)
+            .map_err(|e|e.to_string())?;
+        if let Some(manual)=document.get("proxies").and_then(serde_yaml::Value::as_sequence) {
+            nodes.extend(manual.iter().cloned());
+        }
+    }
+    if !sub.nodes_yaml.trim().is_empty(){
+        let cached:Vec<serde_yaml::Value>=serde_yaml::from_str(&sub.nodes_yaml)
+            .map_err(|e|e.to_string())?;
+        nodes.extend(cached);
+    }
+    parser::validate_nodes(nodes)
+}
+
+async fn profile_nodes_get(AppState(state):AppState<State>,headers:HeaderMap,
+    Path(id):Path<String>) -> ApiResult<JsonValue>{
+    authorized(&state,&headers)?;
+    let db=lock(&state)?;
+    let sub=sql(store::by_id(&db,&id))?
+        .ok_or_else(||error(StatusCode::NOT_FOUND,"Subscription not found"))?;
+    let aliases=sql(identity::aliases(&db,&id))?;
+    let nodes=profile_nodes(&sub).map_err(bad)?;
+    let mut result=Vec::with_capacity(nodes.len());
+    for node in nodes{
+        let key=identity::hash(&id,&node).map_err(bad)?;
+        result.push(json!({
+            "key":key,
+            "name":node["name"],
+            "type":node["type"],
+            "server":node["server"],
+            "port":node["port"],
+            "alias":aliases.get(&key)
+        }));
+    }
+    Ok(Json(json!(result)))
+}
+
+async fn profile_alias_set(AppState(state):AppState<State>,headers:HeaderMap,
+    Path((id,key)):Path<(String,String)>,Json(input):Json<NodeAliasInput>)
+    -> ApiResult<JsonValue>{
+    authorized(&state,&headers)?;
+    identity::validate_alias(&key,&input.name).map_err(bad)?;
+    let db=lock(&state)?;
+    let sub=sql(store::by_id(&db,&id))?
+        .ok_or_else(||error(StatusCode::NOT_FOUND,"Subscription not found"))?;
+    let nodes=profile_nodes(&sub).map_err(bad)?;
+    let mut known=false;
+    for node in &nodes {
+        if identity::hash(&id,node).map_err(bad)?==key {
+            known=true;
+            break;
+        }
+    }
+    if !known {return Err(error(StatusCode::NOT_FOUND,"Node identity not found"));}
+    if !sql(identity::put_alias(&db,&id,&key,&input.name))? {
+        return Err(error(StatusCode::NOT_FOUND,"Subscription not found"));
+    }
+    Ok(Json(json!({"key":key,"alias":input.name.trim()})))
+}
+
+async fn profile_alias_delete(AppState(state):AppState<State>,headers:HeaderMap,
+    Path((id,key)):Path<(String,String)>) -> ApiResult<JsonValue>{
+    authorized(&state,&headers)?;
+    let db=lock(&state)?;
+    if sql(store::by_id(&db,&id))?.is_none(){
+        return Err(error(StatusCode::NOT_FOUND,"Subscription not found"));
+    }
+    Ok(Json(json!({"deleted":sql(identity::delete_alias(&db,&id,&key))?})))
 }
 
 async fn modules_catalog(AppState(state):AppState<State>,headers:HeaderMap)
@@ -504,9 +643,15 @@ pub fn router(state: State) -> Router {
         .route("/style.css",get(css))
         .route("/api/health/live",get(health))
         .route("/api/modules",get(modules_catalog))
+        .route("/api/module-rules/search",get(module_rules_search))
         .route("/api/subscriptions/{id}/modules",
             get(profile_modules_get).put(profile_modules_set))
+        .route("/api/subscriptions/{id}/nodes",get(profile_nodes_get))
+        .route("/api/subscriptions/{id}/node-aliases/{key}",
+            axum::routing::put(profile_alias_set).delete(profile_alias_delete))
         .route("/api/templates",get(templates_list).post(templates_create))
+        .route("/api/templates/import",axum::routing::post(templates_import))
+        .route("/api/templates/{id}/export",get(templates_export))
         .route("/api/templates/{id}",get(templates_get).put(templates_update)
             .delete(templates_delete))
         .route("/api/subscriptions",get(list).post(create))
@@ -537,6 +682,128 @@ mod tests {
         for ip in ["1.1.1.1","8.8.8.8","2606:4700:4700::1111"] {
             assert!(public_ip(ip.parse().unwrap()),"{ip}");
         }
+    }
+    #[tokio::test]
+    async fn node_alias_api_persists_and_affects_public_config_export() {
+        let db=store::open(std::path::Path::new(":memory:")).unwrap();
+        let sub=store::create(&db,store::SubscriptionInput{
+            name:"Renaming".into(),source_urls:vec![],
+            manual_yaml:"proxies:\n  - {name: Original, type: ss, server: edge.example.org, port: 8388, cipher: aes-128-gcm, password: secret}\n".into(),
+            rules_text:String::new()
+        }).unwrap();
+        let app=router(State{
+            db:std::sync::Arc::new(std::sync::Mutex::new(db)),
+            admin_token:std::sync::Arc::new("x".repeat(43)),
+            client:reqwest::Client::new()
+        });
+        let token=format!("Bearer {}","x".repeat(43));
+        let uri=format!("/api/subscriptions/{}/nodes",sub.id);
+        let response=app.clone().oneshot(Request::builder().uri(&uri)
+            .header("Authorization",token.as_str()).body(Body::empty()).unwrap())
+            .await.unwrap();
+        assert_eq!(response.status(),StatusCode::OK);
+        let bytes=axum::body::to_bytes(response.into_body(),1024*1024).await.unwrap();
+        let nodes:JsonValue=serde_json::from_slice(&bytes).unwrap();
+        let hash=nodes[0]["key"].as_str().unwrap();
+        assert_eq!(hash.len(),64);
+        assert!(nodes[0].get("password").is_none());
+        let uri=format!("/api/subscriptions/{}/node-aliases/{}",sub.id,hash);
+        let result=app.clone().oneshot(Request::builder().uri(&uri).method("PUT")
+            .header("Authorization",token.as_str()).header("Content-Type","application/json")
+            .body(Body::from(r#"{"name":"Renamed"}"#)).unwrap())
+            .await.unwrap();
+        assert_eq!(result.status(),StatusCode::OK);
+        let output=app.clone().oneshot(Request::builder()
+            .uri(format!("/api/subscriptions/{}/config.yaml?target=mihomo",sub.token))
+            .body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(output.status(),StatusCode::OK);
+        let bytes=axum::body::to_bytes(output.into_body(),1024*1024).await.unwrap();
+        let config:serde_yaml::Value=serde_yaml::from_slice(&bytes).unwrap();
+        assert_eq!(config["proxies"][0]["name"].as_str(),Some("Renamed"));
+        assert_eq!(config["proxy-groups"][0]["proxies"][1].as_str(),Some("Renamed"));
+        let result=app.clone().oneshot(Request::builder().uri(&uri).method("DELETE")
+            .header("Authorization",token.as_str()).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(result.status(),StatusCode::OK);
+        let output=app.oneshot(Request::builder()
+            .uri(format!("/api/subscriptions/{}/config.yaml?target=mihomo",sub.token))
+            .body(Body::empty()).unwrap()).await.unwrap();
+        let bytes=axum::body::to_bytes(output.into_body(),1024*1024).await.unwrap();
+        let config:serde_yaml::Value=serde_yaml::from_slice(&bytes).unwrap();
+        assert_eq!(config["proxies"][0]["name"].as_str(),Some("Original"));
+    }
+    #[tokio::test]
+    async fn portable_template_export_and_import_require_admin() {
+        let db=store::open(std::path::Path::new(":memory:")).unwrap();
+        let template=templates::create(&db,templates::TemplateInput {
+            name:"Portable".into(),description:"Test".into(),
+            manual_yaml:"dns:\n  enable: true".into(),
+            rules_text:"MATCH,DIRECT".into(),
+        }).unwrap();
+        let state=State {
+            db:std::sync::Arc::new(std::sync::Mutex::new(db)),
+            admin_token:std::sync::Arc::new("x".repeat(43)),
+            client:reqwest::Client::new(),
+        };
+        let app=router(state);
+        let uri=format!("/api/templates/{}/export",template.id);
+        let denied=app.clone().oneshot(Request::builder().uri(&uri)
+            .body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(denied.status(),StatusCode::UNAUTHORIZED);
+        let exported=app.clone().oneshot(Request::builder().uri(&uri)
+            .header("Authorization",format!("Bearer {}","x".repeat(43)))
+            .body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(exported.status(),StatusCode::OK);
+        let bytes=axum::body::to_bytes(exported.into_body(),1024*1024).await.unwrap();
+        let portable:serde_json::Value=serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(portable["version"],1);
+        assert_eq!(portable["format"],"subboost-rs-template");
+        assert!(portable.get("id").is_none());
+        let imported=app.clone().oneshot(Request::builder().uri("/api/templates/import")
+            .method("POST")
+            .header("Authorization",format!("Bearer {}","x".repeat(43)))
+            .header("Content-Type","application/json")
+            .body(Body::from(bytes.clone())).unwrap()).await.unwrap();
+        assert_eq!(imported.status(),StatusCode::OK);
+        let bytes=axum::body::to_bytes(imported.into_body(),1024*1024).await.unwrap();
+        let imported:serde_json::Value=serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(imported["name"],"Portable");
+        assert_ne!(imported["id"],template.id);
+
+        let mut invalid=portable.clone();
+        invalid["version"]=json!(2);
+        let rejected=app.oneshot(Request::builder().uri("/api/templates/import")
+            .method("POST")
+            .header("Authorization",format!("Bearer {}","x".repeat(43)))
+            .header("Content-Type","application/json")
+            .body(Body::from(invalid.to_string())).unwrap()).await.unwrap();
+        assert_eq!(rejected.status(),StatusCode::BAD_REQUEST);
+    }
+    #[tokio::test]
+    async fn rule_catalog_search_is_authenticated_and_bounded() {
+        let db=store::open(std::path::Path::new(":memory:")).unwrap();
+        let app=router(State {
+            db:std::sync::Arc::new(std::sync::Mutex::new(db)),
+            admin_token:std::sync::Arc::new("x".repeat(43)),
+            client:reqwest::Client::new(),
+        });
+        let path="/api/module-rules/search?q=geosite&limit=3";
+        let denied=app.clone().oneshot(Request::builder().uri(path)
+            .body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(denied.status(),StatusCode::UNAUTHORIZED);
+        let response=app.clone().oneshot(Request::builder().uri(path)
+            .header("Authorization",format!("Bearer {}","x".repeat(43)))
+            .body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(),StatusCode::OK);
+        let bytes=axum::body::to_bytes(response.into_body(),64*1024).await.unwrap();
+        let body:JsonValue=serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["items"].as_array().unwrap().len(),3);
+        assert!(body["total_matched"].as_u64().unwrap()>=3);
+        assert_eq!(body["total_rules"].as_u64(),Some(94));
+        let invalid=app.oneshot(Request::builder().uri(
+            format!("/api/module-rules/search?q={}", "a".repeat(129)))
+            .header("Authorization",format!("Bearer {}","x".repeat(43)))
+            .body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(invalid.status(),StatusCode::BAD_REQUEST);
     }
     #[tokio::test]
     async fn authenticated_crud_and_public_export() {

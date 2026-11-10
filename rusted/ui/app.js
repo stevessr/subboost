@@ -37,6 +37,8 @@ function blank() {
   el('node-filter-enabled').checked=false;
   el('node-filter-includes').value='';el('node-filter-excludes').value='';
   el('save-node-filter').disabled=true;
+  el('reload-node-aliases').disabled=true;
+  el('node-alias-list').replaceChildren();
   el('modules-select').disabled=true;
   el('save-modules').disabled=true;
   for(const opt of el('modules-select').options)opt.selected=false;
@@ -56,6 +58,8 @@ function show(profile) {
   el('save-node-filter').disabled=false;
   updateSchedule(profile.id);
   updateNodeFilter(profile.id);
+  el('reload-node-aliases').disabled=false;
+  updateNodeAliases(profile.id);
   el('modules-select').disabled=false;
   el('save-modules').disabled=false;
   updateProfileModules(profile.id);
@@ -171,6 +175,53 @@ el('apply-module-preset').addEventListener('click',()=>{
   for(const option of el('modules-select').options)option.selected=active.has(option.value);
   notice('已选择 '+ids.length+' 个策略组，请点击保存模块配置');
 });
+
+let latestRuleSearch=0;
+let ruleSearchTimer;
+async function searchModuleRules() {
+  const seq=++latestRuleSearch;
+  const query=el('rule-query').value.trim();
+  const panel=el('rule-results');
+  if(!admin || !query){panel.replaceChildren();return;}
+  try {
+    const result=await api('/api/module-rules/search?q='+encodeURIComponent(query)+'&limit=30');
+    if(seq!==latestRuleSearch)return;
+    panel.replaceChildren();
+    if(!result.items.length){
+      const empty=document.createElement('p');empty.className='muted smallprint';
+      empty.textContent='没有匹配的内置规则';panel.append(empty);return;
+    }
+    for(const rule of result.items) {
+      const button=document.createElement('button');button.type='button';
+      button.className='secondary small rule-result';
+      const name=document.createElement('strong');
+      name.textContent=rule.module_name+' · '+rule.rule_name;
+      const detail=document.createElement('small');
+      detail.textContent=rule.rule_id+' · '+rule.behavior+' · '+rule.path;
+      button.append(name,detail);
+      button.addEventListener('click',()=>{
+        const modules=el('modules-select');
+        const option=Array.from(modules.options).find(x=>x.value===rule.module_id);
+        if(!option)return;
+        option.selected=true;
+        notice('已选择「'+rule.module_name+'」，请保存模块配置');
+      });
+      panel.append(button);
+    }
+    if(result.total_matched>result.items.length){
+      const extra=document.createElement('p');
+      extra.className='muted smallprint';
+      extra.textContent='另有 '+(result.total_matched-result.items.length)+' 条结果，请缩小关键词';
+      panel.append(extra);
+    }
+  }catch(err){
+    if(seq===latestRuleSearch){panel.replaceChildren();notice(err.message,true);}
+  }
+}
+el('rule-query').addEventListener('input',()=>{
+  clearTimeout(ruleSearchTimer);
+  ruleSearchTimer=setTimeout(searchModuleRules,200);
+});
 el('save-modules').addEventListener('click',async()=>{
   if(!current)return;
   const ids=Array.from(el('modules-select').selectedOptions).map(o=>o.value);
@@ -190,6 +241,67 @@ async function updateNodeFilter(id){
     el('node-filter-excludes').value=(value.excludeRegexes||[]).join('\n');
   }catch(err){notice(err.message,true);}
 }
+async function updateNodeAliases(id){
+  const list=el('node-alias-list');
+  try{
+    const nodes=await api('/api/subscriptions/'+encodeURIComponent(id)+'/nodes');
+    if(!current||current.id!==id)return;
+    list.replaceChildren();
+    if(!nodes.length){
+      const message=document.createElement('p');
+      message.className='muted smallprint';
+      message.textContent='暂无节点。添加手动节点或刷新远程订阅后即可设置名称。';
+      list.append(message);return;
+    }
+    for(const node of nodes.slice(0,100)){
+      const entry=document.createElement('div');
+      entry.className='rule-result';
+      const info=document.createElement('strong');
+      info.textContent=(node.alias||node.name)+' · '+node.type+' · '+node.server+':'+node.port;
+      const buttons=document.createElement('div');
+      buttons.className='actions';
+      const rename=document.createElement('button');
+      rename.type='button';rename.className='secondary small';rename.textContent='重命名';
+      rename.addEventListener('click',async()=>{
+        const name=prompt('节点的新名称：',node.alias||node.name);
+        if(name===null)return;
+        try{
+          await api('/api/subscriptions/'+encodeURIComponent(id)+'/node-aliases/'+node.key,{
+            method:'PUT',body:JSON.stringify({name:name.trim()})
+          });
+          await updateNodeAliases(id);
+          notice('节点别名已保存，生成配置时自动使用新名称');
+        }catch(err){notice(err.message,true);}
+      });
+      buttons.append(rename);
+      if(node.alias){
+        const reset=document.createElement('button');
+        reset.type='button';reset.className='secondary small';reset.textContent='恢复原名';
+        reset.addEventListener('click',async()=>{
+          try{
+            await api('/api/subscriptions/'+encodeURIComponent(id)+'/node-aliases/'+node.key,{
+              method:'DELETE'
+            });
+            await updateNodeAliases(id);
+            notice('已恢复原始节点名称');
+          }catch(err){notice(err.message,true);}
+        });
+        buttons.append(reset);
+      }
+      entry.append(info,buttons);list.append(entry);
+    }
+    if(nodes.length>100){
+      const more=document.createElement('p');more.className='muted smallprint';
+      more.textContent='共 '+nodes.length+' 个节点，当前显示前 100 个以降低路由器管理页的内存占用';
+      list.append(more);
+    }
+  }catch(err){
+    if(current&&current.id===id)notice(err.message,true);
+  }
+}
+el('reload-node-aliases').addEventListener('click',()=>{
+  if(current)updateNodeAliases(current.id);
+});
 el('save-node-filter').addEventListener('click',async()=>{
   if(!current)return;
   const id=current.id;
@@ -246,6 +358,37 @@ el('save-template').addEventListener('click',async()=>{
     el('template-select').value=item.id;
     notice('模板已保存到本机 SQLite');
   }catch(err){notice(err.message,true);}
+});
+el('export-template').addEventListener('click',async()=>{
+  const selected=savedTemplates.find(t=>t.id===el('template-select').value);
+  if(!selected){notice('请先选择需要导出的模板',true);return;}
+  try{
+    const data=await api('/api/templates/'+encodeURIComponent(selected.id)+'/export');
+    const blob=new Blob([JSON.stringify(data,null,2)+'\n'],{type:'application/json'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;a.download='subboost-rs-template-'+selected.id+'.json';
+    document.body.append(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),5000);
+    notice('模板 JSON 已导出');
+  }catch(err){notice(err.message,true);}
+});
+el('import-template').addEventListener('click',()=>el('import-template-file').click());
+el('import-template-file').addEventListener('change',async()=>{
+  const input=el('import-template-file'),file=input.files&&input.files[0];
+  if(!file)return;
+  try{
+    if(file.size>700*1024)throw Error('模板文件不得超过 700 KiB');
+    const content=JSON.parse(await file.text());
+    if(content.format!=='subboost-rs-template'||content.version!==1){
+      throw Error('只支持 SubBoost RS 模板格式 v1');
+    }
+    const saved=await api('/api/templates/import',{method:'POST',body:JSON.stringify(content)});
+    await reloadTemplates();
+    el('template-select').value=saved.id;
+    notice('已导入模板「'+saved.name+'」，可点击应用模板');
+  }catch(err){notice(err.message,true);}
+  finally{input.value='';}
 });
 el('delete-template').addEventListener('click',async()=>{
   const selected=savedTemplates.find(t=>t.id===el('template-select').value);

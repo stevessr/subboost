@@ -6,6 +6,7 @@ on:
     branches: [main, 'feat/**', 'fix/**']
     paths:
       - 'rusted/**'
+      - '.github/workflows/subboost-rs.yml'
   pull_request:
     paths:
       - 'rusted/**'
@@ -15,6 +16,31 @@ permissions:
   contents: read
 
 jobs:
+  upstream-parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Validate native WebUI JS and shared fixture JSON
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check rusted/ui/app.js
+          node - <<'NODE'
+          const fs = require('node:fs');
+          for (const name of ['uri-parity-fixtures.json', 'rule-parity-fixtures.json', 'node-identity-fixtures.json', 'proxy-group-modules.json']) {
+            const values = JSON.parse(fs.readFileSync('rusted/data/' + name, 'utf8'));
+            if (!Array.isArray(values) || values.length === 0) throw Error('Empty fixture: '+name);
+            console.log(name + ': ' + values.length + ' entries');
+          }
+          NODE
+      - run: npm ci
+      - name: Check canonical URI fixtures against original TypeScript parser
+        run: npx vitest run packages/core/src/parser/protocols/rs-parity.test.ts
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -28,7 +54,7 @@ jobs:
         run: cargo test --manifest-path rusted/Cargo.toml --all-targets
 
   musl:
-    needs: test
+    needs: [test, upstream-parity]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
@@ -41,32 +67,32 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: \${{ matrix.target }}
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rusted
-          key: \${{ matrix.target }}
+          key: ${{ matrix.target }}
       - uses: goto-bus-stop/setup-zig@v2
       - name: Install Zig cross linker
         run: cargo install cargo-zigbuild --locked
       - name: Cross compile portable OpenWrt/musl binary
-        run: cargo zigbuild --manifest-path rusted/Cargo.toml --release --target '\${{ matrix.target }}'
+        run: cargo zigbuild --manifest-path rusted/Cargo.toml --release --target '${{ matrix.target }}'
       - name: Archive binary
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p release
-          binary='rusted/target/\${{ matrix.target }}/release/subboost-rs'
+          binary='rusted/target/${{ matrix.target }}/release/subboost-rs'
           file "$binary"
           chmod +x "$binary"
           cp "$binary" release/subboost-rs
-          tar -czf "subboost-rs-\${{ matrix.target }}.tar.gz" -C release subboost-rs
-          sha256sum "subboost-rs-\${{ matrix.target }}.tar.gz" > "subboost-rs-\${{ matrix.target }}.sha256"
+          tar -czf "subboost-rs-${{ matrix.target }}.tar.gz" -C release subboost-rs
+          sha256sum "subboost-rs-${{ matrix.target }}.tar.gz" > "subboost-rs-${{ matrix.target }}.sha256"
       - uses: actions/upload-artifact@v4
         with:
-          name: subboost-rs-\${{ matrix.target }}
+          name: subboost-rs-${{ matrix.target }}
           path: |
-            subboost-rs-\${{ matrix.target }}.tar.gz
-            subboost-rs-\${{ matrix.target }}.sha256
+            subboost-rs-${{ matrix.target }}.tar.gz
+            subboost-rs-${{ matrix.target }}.sha256
           if-no-files-found: error
           retention-days: 14
