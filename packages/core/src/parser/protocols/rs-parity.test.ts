@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import fixtures from "../../../../../rusted/data/uri-parity-fixtures.json";
 import ruleFixtures from "../../../../../rusted/data/rule-parity-fixtures.json";
+import identityFixtures from "../../../../../rusted/data/node-identity-fixtures.json";
+import { buildNodeContentKey } from "../../node-identity";
+import type { ParsedNode } from "../../types/node";
 import { generateRules } from "../../generator/rules";
 import { parseTrojan } from "./trojan";
 import { parseSS } from "./ss";
@@ -73,6 +76,16 @@ describe("upstream rule-order contract shared with Rust", () => {
         customRules: [],
       });
       expect(actual).toEqual(fixture.expected_rules);
+    });
+  }
+});
+
+describe("upstream stable node-identity contract shared with Rust", () => {
+  for (const fixture of identityFixtures) {
+    it(fixture.id, () => {
+      expect(buildNodeContentKey(
+        fixture.node as unknown as ParsedNode, fixture.opts
+      )).toBe(fixture.expected);
     });
   }
 });
