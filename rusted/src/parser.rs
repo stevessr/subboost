@@ -249,16 +249,18 @@ fn parse_trojan(raw: &str) -> Result<Value, String> {
     };
     let password = percent_encoding::percent_decode_str(&password).decode_utf8_lossy().to_string();
     if password.is_empty() { return Err("Missing Trojan password".into()); }
-    let network = query_param(&url, "type").unwrap_or_else(|| "tcp".into());
+    let network = query_param(&url, "type").unwrap_or_else(|| {
+        if query_bool(&url, "ws") { "ws" } else { "tcp" }.into()
+    });
     let mut proxy = serde_json::json!({
         "name": fragment_name(&url, &server), "type": "trojan", "server": server,
         "port": port, "password": password, "udp": true, "sni": server,
+        "network":network,
     });
-    if let Some(sni) = query_param(&url, "sni") { proxy["sni"] = serde_json::json!(sni); }
-    tls_options(&url, &mut proxy);
-    if network != "tcp" && network != "none" {
-        proxy["network"] = serde_json::json!(network);
+    if let Some(sni) = query_param(&url, "sni").or_else(||query_param(&url, "peer")) {
+        proxy["sni"] = serde_json::json!(sni);
     }
+    tls_options(&url, &mut proxy);
     transport_options(&url, &mut proxy, &network)?;
     node(proxy)
 }
