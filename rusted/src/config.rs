@@ -32,6 +32,67 @@ fn geo(map: &mut Mapping, rule: &str, path_field: &str, url_field: &str,
     }
 }
 
+fn rename_ruleset_matcher(raw: &str, names: &HashMap<String, String>) -> String {
+    if let Some(name) = raw.strip_prefix("rule-set:") {
+        if let Some(replacement) = names.get(name) {
+            return format!("rule-set:{replacement}");
+        }
+    }
+    raw.to_owned()
+}
+
+fn rewrite_dns_names(config: &mut Mapping, names: &HashMap<String, String>) {
+    if let Some(dns) = get_mut(config,"dns").and_then(Value::as_mapping_mut) {
+        if let Some(policy) = get_mut(dns,"nameserver-policy").and_then(Value::as_mapping_mut) {
+            let original = std::mem::take(policy);
+            for (matcher, value) in original {
+                let label = matcher.as_str()
+                    .map(|s| rename_ruleset_matcher(s,names))
+                    .unwrap_or_else(|| matcher.as_str().unwrap_or("").to_owned());
+                policy.insert(key(&label),value);
+            }
+        }
+        if let Some(filters) = get_mut(dns,"fake-ip-filter").and_then(Value::as_sequence_mut) {
+            for matcher in filters {
+                if let Some(name) = matcher.as_str() {
+                    *matcher = key(&rename_ruleset_matcher(name,names));
+                }
+            }
+        }
+    }
+    if let Some(dns2) = get_mut(config,"dns2").and_then(Value::as_mapping_mut) {
+        if let Some(rules) = get_mut(dns2,"rules").and_then(Value::as_sequence_mut) {
+            for rule in rules {
+                if let Some(map) = rule.as_mapping_mut() {
+                    if let Some(ids) = get_mut(map,"rule-set").and_then(Value::as_sequence_mut) {
+                        for id in ids {
+                            if let Some(original) = id.as_str() {
+                                if let Some(replacement) = names.get(original) {
+                                    *id = key(replacement);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn has_geo_dns_matcher(config: &Mapping, prefix: &str) -> bool {
+    let Some(dns) = get(config,"dns").and_then(Value::as_mapping) else { return false; };
+    if let Some(policy) = get(dns,"nameserver-policy").and_then(Value::as_mapping) {
+        if policy.keys().any(|s| s.as_str().map(|name| name.starts_with(prefix))
+            .unwrap_or(false)) { return true; }
+    }
+    if prefix == "geosite:" {
+        return get(dns,"fallback-filter").and_then(Value::as_mapping)
+            .and_then(|m| get(m,"geosite"))
+            .and_then(Value::as_sequence).map(|list| !list.is_empty()).unwrap_or(false);
+    }
+    false
+}
+
 fn adapt_clash_rs(config: &mut Mapping, token: &str) {
     for field in ["geodata-mode","geo-auto-update","geodata-loader",
                   "geo-update-interval","geox-url","tun","ebpf","mixed-port",
@@ -91,6 +152,7 @@ fn adapt_clash_rs(config: &mut Mapping, token: &str) {
             }
         }
     }
+    rewrite_dns_names(config, &renamed);
     if let Some(providers) = get_mut(config,"proxy-providers").and_then(Value::as_mapping_mut) {
         for (name, item) in providers {
             if let Some(provider) = item.as_mapping_mut() {
@@ -106,6 +168,13 @@ fn adapt_clash_rs(config: &mut Mapping, token: &str) {
         "https://cdn.jsdelivr.net/gh/DustinWin/ruleset_geodata@mihomo-geodata/geosite-lite.dat");
     geo(config,"GEOIP","mmdb","mmdb-download-url","Country.mmdb",
         "https://cdn.jsdelivr.net/gh/DustinWin/ruleset_geodata@mihomo-geodata/Country.mmdb");
+    if has_geo_dns_matcher(config,"geosite:") {
+        if get(config,"geosite").is_none() { set(config,"geosite", key("geosite.dat")); }
+        if get(config,"geosite-download-url").is_none() {
+            set(config,"geosite-download-url",key(
+                "https://cdn.jsdelivr.net/gh/DustinWin/ruleset_geodata@mihomo-geodata/geosite-lite.dat"));
+        }
+    }
     geo(config,"IP-ASN","asn-mmdb","asn-mmdb-download-url","Country-ASN.mmdb",
         "https://cdn.jsdelivr.net/gh/DustinWin/ruleset_geodata@mihomo-geodata/Country-ASN.mmdb");
 }
@@ -196,4 +265,28 @@ mod tests {
         let mut sub=subscription();sub.nodes_yaml.clear();
         assert!(generate(&sub,"clash-rs").is_err());
     }
+    #[test]
+    fn dns_and_dns2_ruleset_labels_are_rewritten() {
+        let mut sub = subscription();
+        sub.manual_yaml = r#"
+rule-providers:
+  cn: {type: http, behavior: domain, format: mrs, url: "https://example.org/cn.mrs"}
+dns:
+  nameserver-policy:
+    "rule-set:cn": ["https://1.1.1.1/dns-query"]
+    "geosite:private": ["https://223.5.5.5/dns-query"]
+  fake-ip-filter:
+    - "rule-set:cn"
+dns2:
+  rules:
+    - rule-set: [cn]
+"#.to_owned();
+        let yaml = generate(&sub,"clash-rs").unwrap();
+        let doc: Value = serde_yaml::from_str(&yaml).unwrap();
+        assert!(doc["dns"]["nameserver-policy"]["rule-set:subboost-cn"].is_sequence());
+        assert_eq!(doc["dns"]["fake-ip-filter"][0].as_str(),Some("rule-set:subboost-cn"));
+        assert_eq!(doc["dns2"]["rules"][0]["rule-set"][0].as_str(),Some("subboost-cn"));
+        assert_eq!(doc["geosite"].as_str(),Some("geosite.dat"));
+    }
+
 }
