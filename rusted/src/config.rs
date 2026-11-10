@@ -238,23 +238,29 @@ pub fn generate_filtered(subscription: &Subscription, target: &str,
     let mut selector = vec![key("Auto")];
     selector.extend(names.clone());
     selector.push(key("DIRECT"));
-    let groups = vec![
-        serde_yaml::to_value(serde_json::json!({"name":"Proxy","type":"select","proxies":selector}))
-            .map_err(|e|e.to_string())?,
-        serde_yaml::to_value(serde_json::json!({
-            "name":"Auto","type":"url-test","proxies":names,
-            "url":"https://www.gstatic.com/generate_204","interval":300
-        })).map_err(|e|e.to_string())?,
-    ];
-    // A manual YAML's custom proxy groups can extend the built-ins.
-    let mut groups = groups;
-    if let Some(existing) = get(&manual,"proxy-groups").and_then(Value::as_sequence) {
-        for group in existing {
-            if !matches!(group["name"].as_str(),Some("Proxy"|"Auto")) {
-                groups.push(group.clone());
-            }
+    let default_proxy=serde_yaml::to_value(serde_json::json!({
+        "name":"Proxy","type":"select","proxies":selector
+    })).map_err(|e|e.to_string())?;
+    let default_auto=serde_yaml::to_value(serde_json::json!({
+        "name":"Auto","type":"url-test","proxies":names,
+        "url":"https://www.gstatic.com/generate_204","interval":300
+    })).map_err(|e|e.to_string())?;
+    // Preserve explicit user-defined Proxy / Auto policy groups, including
+    // load balancing, fallback, provider references and health checks.
+    let existing=get(&manual,"proxy-groups").and_then(Value::as_sequence)
+        .cloned().unwrap_or_default();
+    let mut seen=HashSet::<String>::new();
+    for group in &existing {
+        let name=group["name"].as_str().unwrap_or("");
+        if name.is_empty() {return Err("Proxy-group name must not be empty".into());}
+        if !seen.insert(name.to_owned()){
+            return Err(format!("Duplicate proxy-group name: {name}"));
         }
     }
+    let mut groups=Vec::new();
+    if !seen.contains("Proxy"){groups.push(default_proxy);}
+    if !seen.contains("Auto"){groups.push(default_auto);}
+    groups.extend(existing);
     set(&mut manual,"proxy-groups",Value::Sequence(groups));
     let rules: Vec<Value> = subscription.rules_text.lines()
         .map(str::trim).filter(|s| !s.is_empty() && !s.starts_with('#'))
@@ -357,6 +363,31 @@ proxy-providers:
         for (_,p) in proxies{
             assert!(paths.insert(p["path"].as_str().unwrap().to_owned()));
         }
+    }
+
+    #[test]
+    fn preserves_explicit_manual_advanced_proxy_groups() {
+        let mut sub=subscription();
+        sub.manual_yaml=r#"
+proxy-groups:
+  - name: Proxy
+    type: select
+    proxies: [Auto, DIRECT]
+  - name: Auto
+    type: load-balance
+    proxies: [Node]
+    strategy: sticky-sessions
+  - name: Custom
+    type: fallback
+    proxies: [Node, DIRECT]
+    interval: 120
+"#.to_owned();
+        let v:Value=serde_yaml::from_str(&generate(&sub,"clash-rs").unwrap()).unwrap();
+        let groups=v["proxy-groups"].as_sequence().unwrap();
+        assert_eq!(groups.len(),3);
+        assert_eq!(groups[1]["strategy"].as_str(),Some("sticky-session"));
+        assert_eq!(groups[2]["interval"].as_i64(),Some(120));
+        assert_eq!(groups[0]["proxies"][0].as_str(),Some("Auto"));
     }
 
 }

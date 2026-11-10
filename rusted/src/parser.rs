@@ -181,6 +181,18 @@ pub fn validate_nodes(nodes: Vec<Value>) -> Result<Vec<Value>, String> {
     Ok(output)
 }
 
+fn strip_imported_controls(mut nodes:Vec<Value>)->Vec<Value>{
+    // Imported subscriptions cannot set local relay/group routing controls.
+    // Keep deliberate dialer-proxy in user-authored manual YAML unchanged.
+    for node in &mut nodes {
+        if let Some(map)=node.as_mapping_mut() {
+            map.remove(Value::String("dialer-proxy".into()));
+            map.remove(Value::String("dialer_proxy".into()));
+        }
+    }
+    nodes
+}
+
 pub fn parse_document(body: &str) -> Result<Vec<Value>, String> {
     if body.len() > 3 * 1024 * 1024 { return Err("Subscription content too large".into()); }
     let content = body.trim();
@@ -191,7 +203,7 @@ pub fn parse_document(body: &str) -> Result<Vec<Value>, String> {
             Value::Sequence(seq) => Some(seq),
             _ => None,
         };
-        if let Some(proxies) = proxy_seq { return validate_nodes(proxies.clone()); }
+        if let Some(proxies) = proxy_seq { return validate_nodes(proxies.clone()).map(strip_imported_controls); }
     }
     let mut source = content.to_string();
     if !source.contains("://") {
@@ -204,7 +216,7 @@ pub fn parse_document(body: &str) -> Result<Vec<Value>, String> {
     if uris.len() > 10000 { return Err("Too many nodes".into()); }
     let mut nodes = Vec::new();
     for uri in uris { nodes.push(parse_uri(uri)?); }
-    validate_nodes(nodes)
+    validate_nodes(nodes).map(strip_imported_controls)
 }
 
 #[cfg(test)]
@@ -236,4 +248,12 @@ mod tests {
         assert!(parse_document("proxies:\n  - {name: A, type: ss, server: example.org, port: 0}").is_err());
         assert!(parse_uri("file:///etc/passwd").is_err());
     }
+    #[test]
+    fn drops_remote_dialer_proxy_controls_but_keeps_other_fields() {
+        let doc="proxies:\n  - {name: Relay, type: ss, server: example.org, port: 8388, cipher: aes-128-gcm, password: pass, dialer-proxy: Evil}\n";
+        let parsed=parse_document(doc).unwrap();
+        assert!(parsed[0].get("dialer-proxy").is_none());
+        assert_eq!(parsed[0]["cipher"].as_str(),Some("aes-128-gcm"));
+    }
+
 }
