@@ -27,6 +27,13 @@ fn endpoint(url: &Url) -> Result<(String, u16), String> {
     Ok((host.into(), port))
 }
 
+fn endpoint_with_default(url: &Url, default_port: u16) -> Result<(String, u16), String> {
+    let host = url.host_str().filter(|v| !v.is_empty()).ok_or("Missing server host")?;
+    let port = url.port().unwrap_or(default_port);
+    if port == 0 { return Err("Missing server port".into()); }
+    Ok((host.into(), port))
+}
+
 fn node(value: serde_json::Value) -> Result<Value, String> {
     serde_yaml::to_value(value).map_err(|e| e.to_string())
 }
@@ -125,7 +132,7 @@ fn tls_options(url: &Url, proxy: &mut serde_json::Value) {
 }
 fn parse_trojan(raw: &str) -> Result<Value, String> {
     let url = Url::parse(raw).map_err(|e| e.to_string())?;
-    let (server, port) = endpoint(&url)?;
+    let (server, port) = endpoint_with_default(&url, 443)?;
     let password = match url.password() {
         Some(suffix) => format!("{}:{}", url.username(), suffix),
         None => url.username().to_owned(),
@@ -147,7 +154,7 @@ fn parse_trojan(raw: &str) -> Result<Value, String> {
 }
 fn parse_vless(raw: &str) -> Result<Value, String> {
     let url = Url::parse(raw).map_err(|e| e.to_string())?;
-    let (server, port) = endpoint(&url)?;
+    let (server, port) = endpoint_with_default(&url, 443)?;
     if url.username().is_empty() { return Err("Missing VLESS UUID".into()); }
     let security = query_param(&url, "security").unwrap_or_else(|| "none".into());
     if !matches!(security.as_str(), "none" | "tls" | "reality") {
@@ -312,6 +319,11 @@ mod tests {
         assert_eq!(parsed["client-fingerprint"].as_str(),Some("chrome"));
         assert_eq!(parsed["alpn"].as_sequence().unwrap().len(),2);
         assert!(parse_uri("vless://uuid@example.org:443?security=reality").is_err());
+    }
+    #[test]
+    fn accepts_upstream_default_tls_ports() {
+        assert_eq!(parse_uri("trojan://secret@example.org").unwrap()["port"].as_i64(), Some(443));
+        assert_eq!(parse_uri("vless://uuid@example.org?security=tls").unwrap()["port"].as_i64(), Some(443));
     }
     #[test]
     fn percent_encoded_trojan_password_and_chinese_name() {
