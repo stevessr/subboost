@@ -278,5 +278,21 @@
       "ws_host": "cdn.example.org",
       "ws_upgrade": true
     }
+  },
+  {
+    "id": "trojan-httpupgrade",
+    "uri": "trojan://secret@upgrade.example.org:443?type=httpupgrade&host=cdn.example.org&path=%2Fupgrade#Upgrade",
+    "expected": {
+      "name": "Upgrade",
+      "type": "trojan",
+      "server": "upgrade.example.org",
+      "port": 443,
+      "network": "ws",
+      "udp": true,
+      "sni": "upgrade.example.org",
+      "ws_path": "/upgrade",
+      "ws_host": "cdn.example.org",
+      "ws_upgrade": true
+    }
   }
 ]
