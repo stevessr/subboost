@@ -1,0 +1,64 @@
+[
+  {
+    "id": "renames-and-internal-metadata-stable",
+    "node": {
+      "name": "Node A",
+      "type": "vless",
+      "server": "example.org",
+      "port": 443,
+      "uuid": "abc",
+      "_meta": {
+        "source": "one"
+      },
+      "reality-opts": {
+        "public-key": "abc",
+        "_spider-x": "/x"
+      }
+    },
+    "opts": {},
+    "expected": "{\"port\":443,\"reality-opts\":{\"public-key\":\"abc\"},\"server\":\"example.org\",\"type\":\"vless\",\"uuid\":\"abc\"}"
+  },
+  {
+    "id": "ignore-endpoint-host-port-and-sni",
+    "node": {
+      "name": "Node",
+      "type": "ss",
+      "server": "a.example",
+      "port": 80,
+      "sni": "a",
+      "servername": "b",
+      "password": "secret",
+      "cipher": "aes-256-gcm"
+    },
+    "opts": {
+      "ignoreServer": true,
+      "ignorePort": true,
+      "ignoreSni": true,
+      "ignoreServername": true
+    },
+    "expected": "{\"cipher\":\"aes-256-gcm\",\"password\":\"secret\",\"type\":\"ss\"}"
+  },
+  {
+    "id": "keep-nested-names-but-drop-private-keys",
+    "node": {
+      "type": "trojan",
+      "name": "Display",
+      "server": "edge.example.org",
+      "port": 443,
+      "password": "foo",
+      "extra": {
+        "name": "nested",
+        "_private": "ignored",
+        "z": [
+          {
+            "label": "value",
+            "_x": 1
+          }
+        ]
+      },
+      "_debug": "ignore"
+    },
+    "opts": {},
+    "expected": "{\"extra\":{\"name\":\"nested\",\"z\":[{\"label\":\"value\"}]},\"password\":\"foo\",\"port\":443,\"server\":\"edge.example.org\",\"type\":\"trojan\"}"
+  }
+]
