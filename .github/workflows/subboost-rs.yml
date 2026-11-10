@@ -16,6 +16,18 @@ permissions:
   contents: read
 
 jobs:
+  upstream-parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Check canonical URI fixtures against original TypeScript parser
+        run: npx vitest run packages/core/src/parser/protocols/rs-parity.test.ts
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -29,7 +41,7 @@ jobs:
         run: cargo test --manifest-path rusted/Cargo.toml --all-targets
 
   musl:
-    needs: test
+    needs: [test, upstream-parity]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
