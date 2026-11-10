@@ -1,5 +1,5 @@
 //! Safe generated Clash configuration with clash-rs / Nikki RS adaptation.
-use crate::store::Subscription;
+use crate::{store::Subscription,modules};
 use serde_yaml::{Mapping, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -193,11 +193,93 @@ fn adapt_clash_rs(config: &mut Mapping, token: &str) {
         "https://cdn.jsdelivr.net/gh/DustinWin/ruleset_geodata@mihomo-geodata/Country-ASN.mmdb");
 }
 
+/// Add the canonical upstream modules as opt-in policy groups and rule-set
+/// providers. Disabled for existing profiles to keep v0.1 configuration
+/// behavior unchanged. The source catalog contains 36 modules / 94 rules.
+fn add_policy_modules(config:&mut Mapping,enabled:&[String])->Result<(),String>{
+    modules::validate(enabled)?;
+    if enabled.is_empty(){return Ok(());}
+    let ordered=modules::ordered(enabled);
+    let proxies=config.get(key("proxies")).and_then(Value::as_sequence)
+        .ok_or("No proxies for enabled modules")?;
+    let names:Vec<Value>=proxies.iter().filter_map(|p|p["name"].as_str().map(key)).collect();
+    let mut groups=config.get(key("proxy-groups"))
+        .and_then(Value::as_sequence).cloned().unwrap_or_default();
+    let mut group_names:HashSet<String>=groups.iter()
+        .filter_map(|v|v["name"].as_str().map(str::to_owned)).collect();
+    let mut providers=config.get(key("rule-providers"))
+        .and_then(Value::as_mapping).cloned().unwrap_or_default();
+    let mut generated=Vec::<Value>::new();
+    let mut used_rules=HashSet::<String>::new();
+    for module in ordered{
+        if group_names.insert(module.name.clone()){
+            let primary=match module.group_type.as_str(){
+                "reject-first"=>vec![key("REJECT"),key("DIRECT"),key("Proxy")],
+                "direct-first"=>vec![key("DIRECT"),key("Proxy")],
+                "select" if module.id=="select"=>{
+                    let mut entries=vec![key("Auto")];
+                    entries.extend(names.iter().cloned());
+                    entries.push(key("DIRECT"));
+                    entries
+                },
+                _=>vec![key("Proxy"),key("DIRECT")]
+            };
+            let group=if matches!(module.group_type.as_str(),"url-test"|"fallback"|"load-balance"){
+                serde_yaml::to_value(serde_json::json!({
+                    "name":module.name,"type":module.group_type,
+                    "proxies":names,"url":"https://www.gstatic.com/generate_204",
+                    "interval":300
+                })).map_err(|e|e.to_string())?
+            }else{
+                serde_yaml::to_value(serde_json::json!({
+                    "name":module.name,"type":"select","proxies":primary
+                })).map_err(|e|e.to_string())?
+            };
+            groups.push(group);
+        }
+        for rule in &module.rules{
+            if !used_rules.insert(rule.id.clone()){continue;}
+            if !providers.contains_key(key(&rule.id)){
+                let url=format!(
+                    "https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/meta/geo/{}",
+                    rule.path);
+                providers.insert(key(&rule.id),
+                    serde_yaml::to_value(serde_json::json!({
+                        "type":"http","format":"mrs","behavior":rule.behavior,
+                        "url":url,"path":format!("./rules/{}",rule.path),
+                        "interval":86400
+                    })).map_err(|e|e.to_string())?);
+            }
+            let mut text=format!("RULE-SET,{},{name}",rule.id,name=module.name);
+            if rule.no_resolve{text.push_str(",no-resolve");}
+            generated.push(key(&text));
+        }
+    }
+    let current=config.get(key("rules")).and_then(Value::as_sequence)
+        .cloned().unwrap_or_default();
+    let mut trailing=Vec::<Value>::new();
+    for rule in current{
+        if rule.as_str().map(|v|v.starts_with("MATCH,")).unwrap_or(false){
+            trailing.push(rule);
+        }else{generated.push(rule);}
+    }
+    generated.extend(trailing);
+    set(config,"proxy-groups",Value::Sequence(groups));
+    set(config,"rule-providers",Value::Mapping(providers));
+    set(config,"rules",Value::Sequence(generated));
+    Ok(())
+}
+
 pub fn generate(subscription: &Subscription, target: &str) -> Result<String, String> {
     generate_filtered(subscription,target,&crate::filter::NodeNameFilter::default())
 }
 pub fn generate_filtered(subscription: &Subscription, target: &str,
     name_filter:&crate::filter::NodeNameFilter) -> Result<String,String> {
+    generate_with_modules(subscription,target,name_filter,&[])
+}
+pub fn generate_with_modules(subscription: &Subscription, target: &str,
+    name_filter:&crate::filter::NodeNameFilter, enabled_modules:&[String]
+) -> Result<String,String> {
     if !matches!(target,"mihomo"|"clash-rs"|"nikki-rs") {
         return Err("Unsupported target (mihomo or clash-rs)".into());
     }
@@ -274,6 +356,7 @@ pub fn generate_filtered(subscription: &Subscription, target: &str,
     }
     set(&mut manual,"rules",Value::Sequence(rules));
     set(&mut manual,"mode", key("rule"));
+    add_policy_modules(&mut manual,enabled_modules)?;
     if target != "mihomo" { adapt_clash_rs(&mut manual, &subscription.token); }
     serde_yaml::to_string(&Value::Mapping(manual)).map_err(|e|e.to_string())
 }
@@ -363,6 +446,38 @@ proxy-providers:
         for (_,p) in proxies{
             assert!(paths.insert(p["path"].as_str().unwrap().to_owned()));
         }
+    }
+
+    #[test]
+    fn opt_in_full_upstream_modules_generate_policy_groups_and_mrs_paths() {
+        let sub=subscription();
+        let ids=modules::preset("standard").unwrap();
+        let generated=generate_with_modules(&sub,"clash-rs",
+            &crate::filter::NodeNameFilter::default(),&ids).unwrap();
+        let v:Value=serde_yaml::from_str(&generated).unwrap();
+        let groups=v["proxy-groups"].as_sequence().unwrap();
+        for expected in ["🤖 AI 服务","📹 油管视频","🛑 广告拦截",
+                         "🚀 节点选择","⚡ 自动选择"]{
+            assert!(groups.iter().any(|g|g["name"].as_str()==Some(expected)), "{expected}");
+        }
+        let provider=&v["rule-providers"]["subboost-openai"];
+        assert_eq!(provider["format"].as_str(),Some("mrs"));
+        assert!(provider["path"].as_str().unwrap().starts_with(
+            "/etc/nikki-rs/providers/rule/subboost-"));
+        let rules=v["rules"].as_sequence().unwrap();
+        assert!(rules.iter().any(|r|r.as_str().unwrap_or("")
+            .starts_with("RULE-SET,subboost-openai,")));
+        let custom=generate(&sub,"clash-rs").unwrap();
+        assert!(!custom.contains("🤖 AI 服务"));
+    }
+
+    #[test]
+    fn rejects_unknown_policy_module_ids() {
+        let sub=subscription();
+        let error=generate_with_modules(&sub,"mihomo",
+            &crate::filter::NodeNameFilter::default(),
+            &["not-in-catalog".to_owned()]).unwrap_err();
+        assert!(error.contains("Unknown policy module"),"{error}");
     }
 
     #[test]
