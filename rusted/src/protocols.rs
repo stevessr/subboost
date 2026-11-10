@@ -22,9 +22,8 @@ fn endpoint(url:&Url,default:u16)->Result<(String,u16),String>{
     Ok((server.into(),port))
 }
 fn param(url:&Url,keys:&[&str])->Option<String>{
-    let query=url.query_pairs();
     for key in keys{
-        if let Some((_,v))=query.clone().find(|(k,_)|k==*key && !v.is_empty()){
+        if let Some((_,v))=url.query_pairs().find(|(k,v)|k==*key && !v.is_empty()){
             return Some(v.to_string());
         }
     }

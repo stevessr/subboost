@@ -24,3 +24,10 @@ tower-http = { version = "0.6", features = ["trace"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

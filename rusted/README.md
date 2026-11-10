@@ -37,3 +37,8 @@ The native musl APK is being integrated with Nikki RS Nightly.
 ## OpenWrt procd runtime
 
 Native OpenWrt APK packaging uses openwrt/subboost-rs.init, subboost-rs.config and subboost-rsctl. SQLite data and token live under /etc/subboost-rs (persistent overlay, chmod 0700, owned by nobody). The procd daemon runs as nobody on port 3000 (configurable). Run subboost-rsctl token from SSH to obtain the WebUI admin token. Do not open port 3000 on WAN. Removing the APK preserves the SQLite database.
+
+
+## Compact ARM64 release profile
+
+Release builds now use size-focused Rust code generation (`opt-level=s`, ThinLTO, one codegen unit, symbols stripped, abort on panic). Test builds retain unwind behavior. The A53 footprint job measures the exact architecture's static ELF size and native ARM64 RSS before reporting resource claims. ARM64 CI runners are not physical Cortex-A53 devices.
